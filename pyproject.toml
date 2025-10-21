@@ -19,13 +19,16 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "mkdocs>=1.6.1",
     "mypy>=1.18.2",
     "pytest>=8.4.2",
     "ruff>=0.13.3",
+    "sybil[pytest]>=9.2.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = [
+    "docs/",
     "src/gempyor2/",
     "tests/",
 ]
