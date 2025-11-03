@@ -10,6 +10,7 @@ authors = [
 ]
 requires-python = ">=3.11,<=3.14"
 dependencies = [
+<<<<<<< HEAD
     "PyYAML>=6.0",
     "pydantic>=2.7",
     "flepimop2",
@@ -32,6 +33,11 @@ data = [
     "pyarrow>=16.0",
 ]
 
+=======
+    "flepimop2",
+]
+
+>>>>>>> main
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -45,22 +51,29 @@ dev = [
     "sybil[pytest]>=9.2.0",
 ]
 
+<<<<<<< HEAD
 [tool.hatch.build.targets.wheel]
 packages = ["src/gempyor2"]
 
+=======
+>>>>>>> main
 [tool.pytest.ini_options]
 testpaths = [
     "docs/",
     "src/gempyor2/",
     "tests/",
 ]
+<<<<<<< HEAD
 addopts = "-q --color=yes"
+=======
+>>>>>>> main
 
 [tool.ruff.format]
 docstring-code-format = true
 docstring-code-line-length = 72
 
 [tool.ruff.lint]
+<<<<<<< HEAD
 select = ["ALL"]
 ignore = [
     "COM812",
@@ -68,12 +81,28 @@ ignore = [
     "D203",
     "D212",
     "PLR2004",
+=======
+select = [
+    "ALL",
+]
+ignore = [
+    "COM812",  # Missing trailing comma, not needed when used with the formatter
+    "CPY001",  # Missing copyright notice at top of file
+    "D203",    # 1 blank line required before class docstring
+    "D212",    # Multi-line docstring summary should start at the first line
+    "PLR2004", # Consider replacing magic number with a constant variable
+>>>>>>> main
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*" = [
+<<<<<<< HEAD
     "INP001",
     "S101",
+=======
+    "INP001",  # Implicit namespace package
+    "S101",    # Use of `assert` detected
+>>>>>>> main
 ]
 
 [tool.ruff.lint.pydocstyle]
