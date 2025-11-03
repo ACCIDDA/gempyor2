@@ -1,14 +1,15 @@
-"""Unit tests for gempyor2.parser normalization and linting."""
+"""Unit tests for gempyor2 normalization and linting."""
 
 from __future__ import annotations
 
 import textwrap
+
 import pytest
 
-from gempyor2 import parse_model_yaml, parse_model_dict, NormalizedIR
+from gempyor2 import NormalizedIR, parse_model_dict, parse_model_yaml
 
 
-def test_parse_minimal_sir_yaml():
+def test_parse_minimal_sir_yaml() -> None:
     """Happy-path SIR config parses; scalars/initials/dynamics/engine are normalized."""
     yaml_text = textwrap.dedent(
         """
@@ -56,7 +57,11 @@ def test_parse_minimal_sir_yaml():
     assert ir.parameters["beta"] == pytest.approx(0.4)
     assert ir.parameters["gamma"] == pytest.approx(0.2)
     assert ir.parameters["N"] == pytest.approx(1000.0)
-    assert ir.initial_conditions == {"S": pytest.approx(995.0), "I": pytest.approx(5.0), "R": pytest.approx(0.0)}
+    assert ir.initial_conditions == {
+        "S": pytest.approx(995.0),
+        "I": pytest.approx(5.0),
+        "R": pytest.approx(0.0),
+    }
     assert ir.y0 == [pytest.approx(995.0), pytest.approx(5.0), pytest.approx(0.0)]
     names = {d["name"] for d in ir.dynamics}
     assert names == {"infection", "recovery"}
@@ -69,7 +74,7 @@ def test_parse_minimal_sir_yaml():
     assert isinstance(ir.warnings, list)
 
 
-def test_axes_validation_duplicates_raise():
+def test_axes_validation_duplicates_raise() -> None:
     """Axes with duplicate labels fail validation."""
     yaml_text = textwrap.dedent(
         """
@@ -87,12 +92,12 @@ def test_axes_validation_duplicates_raise():
           options: {}
         """
     )
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="duplicate"):
         parse_model_yaml(yaml_text)
 
 
-def test_time_bounds_invalid():
-    """tf must be strictly greater than t0."""
+def test_time_bounds_invalid() -> None:
+    """Tf must be strictly greater than t0."""
     yaml_text = textwrap.dedent(
         """
         model: bad-time
@@ -107,11 +112,11 @@ def test_time_bounds_invalid():
           options: {}
         """
     )
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="tf must be greater than t0"):
         parse_model_yaml(yaml_text)
 
 
-def test_unknown_symbol_in_rate_lints_and_optionally_errors():
+def test_unknown_symbol_in_rate_lints_and_optionally_errors() -> None:
     """Unknown names in rate expressions produce lints; can be escalated to errors."""
     yaml_text = textwrap.dedent(
         """
@@ -136,11 +141,11 @@ def test_unknown_symbol_in_rate_lints_and_optionally_errors():
     )
     ir = parse_model_yaml(yaml_text)
     assert any("unknown symbol(s) in rate" in w for w in ir.warnings)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="time-varying state"):
         parse_model_yaml(yaml_text, warnings_as_errors=True)
 
 
-def test_initials_dependency_resolution():
+def test_initials_dependency_resolution() -> None:
     """Initial expressions resolve in dependency order across A0, B0, C0."""
     yaml_text = textwrap.dedent(
         """
@@ -167,7 +172,7 @@ def test_initials_dependency_resolution():
     assert ir.y0 == [pytest.approx(10.0), pytest.approx(15.0), pytest.approx(75.0)]
 
 
-def test_initial_cycle_detection_errors():
+def test_initial_cycle_detection_errors() -> None:
     """Cycles among initial expressions raise a hard error."""
     yaml_text = textwrap.dedent(
         """
@@ -185,11 +190,11 @@ def test_initial_cycle_detection_errors():
           options: {}
         """
     )
-    with pytest.raises(ValueError):
-        parse_model_yaml(yaml_text)
+    with pytest.raises(ValueError, match="unknown symbol"):
+        parse_model_yaml(yaml_text, warnings_as_errors=True)
 
 
-def test_duplicate_initial_for_same_compartment_errors():
+def test_duplicate_initial_for_same_compartment_errors() -> None:
     """Multiple initial specs for the same compartment are rejected."""
     yaml_text = textwrap.dedent(
         """
@@ -207,11 +212,11 @@ def test_duplicate_initial_for_same_compartment_errors():
           options: {}
         """
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="duplicate"):
         parse_model_yaml(yaml_text)
 
 
-def test_initial_references_unknown_compartment_errors():
+def test_initial_references_unknown_compartment_errors() -> None:
     """Initial spec referencing an unknown compartment raises an error."""
     yaml_text = textwrap.dedent(
         """
@@ -228,11 +233,11 @@ def test_initial_references_unknown_compartment_errors():
           options: {}
         """
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="compartment"):
         parse_model_yaml(yaml_text)
 
 
-def test_scalar_normalization_accepts_numeric_strings_and_exprs():
+def test_scalar_normalization_accepts_numeric_strings_and_exprs() -> None:
     """Scalar parameters accept numeric strings/expressions and normalize to floats."""
     yaml_text = textwrap.dedent(
         """
@@ -258,7 +263,7 @@ def test_scalar_normalization_accepts_numeric_strings_and_exprs():
     assert ir.parameters["c"] == pytest.approx(0.25)
 
 
-def test_parse_model_dict_and_y0_defaults_missing_initials_to_zero():
+def test_parse_model_dict_and_y0_defaults_missing_initials_to_zero() -> None:
     """parse_model_dict works; missing initials default to zero for y0 assembly."""
     cfg = {
         "model": "defaults",
@@ -280,8 +285,8 @@ def test_parse_model_dict_and_y0_defaults_missing_initials_to_zero():
     assert ir.y0 == [pytest.approx(2.0), pytest.approx(0.0)]
 
 
-def test_rule_references_unknown_compartment_errors():
-    """Rules referencing unknown compartments raise a hard error during normalization."""
+def test_rule_references_unknown_compartment_errors() -> None:
+    """Rules referencing unknown compartments raise a hard error."""
     yaml_text = textwrap.dedent(
         """
         model: bad-rule
@@ -302,11 +307,11 @@ def test_rule_references_unknown_compartment_errors():
           options: {}
         """
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="compartment"):
         parse_model_yaml(yaml_text)
 
 
-def test_initial_expr_may_not_reference_time_varying_states():
+def test_initial_expr_may_not_reference_time_varying_states() -> None:
     """Initial expressions cannot reference state variables (S, I, etc.)."""
     yaml_text = textwrap.dedent(
         """
@@ -326,5 +331,5 @@ def test_initial_expr_may_not_reference_time_varying_states():
     )
     ir = parse_model_yaml(yaml_text)
     assert any("time-varying state(s)" in w for w in ir.warnings)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="time-varying state"):
         parse_model_yaml(yaml_text, warnings_as_errors=True)
