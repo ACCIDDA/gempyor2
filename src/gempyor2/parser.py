@@ -1,4 +1,5 @@
-# parser.py
+"""Pydantic models and normalization pipeline for gempyor2 parser."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,26 +10,28 @@ import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ._utils import (
-    _names_in_expr,
     _collect_scalars_and_initial_specs,
+    _names_in_expr,
+    _normalize_dynamics,
     _normalize_scalar_parameters,
     _resolve_initials,
-    _normalize_dynamics,
 )
 
 # =============================================================================
-# Pydantic v2 models
+# Pydantic models
 # =============================================================================
 
 
 class EngineConfig(BaseModel):
     """Engine configuration for the solver module."""
+
     module: str
     options: dict[str, Any] = Field(default_factory=dict)
 
 
 class DynamicRule(BaseModel):
     """A single transition rule between compartments."""
+
     name: str
     source: str
     target: str
@@ -39,12 +42,14 @@ class DynamicRule(BaseModel):
     @classmethod
     def _non_empty_rate(cls, v: str) -> str:
         if not isinstance(v, str) or not v.strip():
-            raise ValueError("rate must be a non-empty string expression.")
+            msg = "rate must be a non-empty string expression."
+            raise ValueError(msg)
         return v
 
 
 class Structure(BaseModel):
     """Model structure: compartments and optional axes."""
+
     compartments: list[str]
     axes: dict[str, list[str]] | None = None
 
@@ -52,30 +57,41 @@ class Structure(BaseModel):
     @classmethod
     def _validate_compartments(cls, v: list[str]) -> list[str]:
         if not v:
-            raise ValueError("structure.compartments must be non-empty.")
+            msg = "structure.compartments must be non-empty."
+            raise ValueError(msg)
         if len(v) != len(set(v)):
-            raise ValueError("structure.compartments must be unique.")
+            msg = "structure.compartments must be unique."
+            raise ValueError(msg)
         return v
 
     @field_validator("axes")
     @classmethod
-    def _validate_axes(cls, axes: dict[str, list[str]] | None):
+    def _validate_axes(
+        cls, axes: dict[str, list[str]] | None
+    ) -> dict[str, list[str]] | None:
         if axes is None:
             return None
         if not isinstance(axes, dict):
-            raise ValueError("structure.axes must be a mapping of axis_name -> list[str].")
+            msg = "structure.axes must be a mapping of axis_name -> list[str]."
+            raise TypeError(msg)
         for ax, labels in axes.items():
-            if not isinstance(labels, list) or not all(isinstance(x, str) for x in labels):
-                raise ValueError(f"Axis '{ax}' must be a list of strings.")
+            if not isinstance(labels, list) or not all(
+                isinstance(x, str) for x in labels
+            ):
+                msg = f"Axis '{ax}' must be a list of strings."
+                raise TypeError(msg)
             if not labels:
-                raise ValueError(f"Axis '{ax}' must not be empty.")
+                msg = f"Axis '{ax}' must not be empty."
+                raise ValueError(msg)
             if len(labels) != len(set(labels)):
-                raise ValueError(f"Axis '{ax}' labels must be unique.")
+                msg = f"Axis '{ax}' labels must be unique."
+                raise ValueError(msg)
         return axes
 
 
 class ModelSpec(BaseModel):
     """Top-level model specification parsed from YAML."""
+
     model: str
     t0: float
     tf: float
@@ -85,9 +101,10 @@ class ModelSpec(BaseModel):
     engine: EngineConfig
 
     @model_validator(mode="after")
-    def _validate_times(self) -> "ModelSpec":
+    def _validate_times(self) -> ModelSpec:
         if float(self.tf) <= float(self.t0):
-            raise ValueError("tf must be greater than t0.")
+            msg = "tf must be greater than t0."
+            raise ValueError(msg)
         return self
 
 
@@ -95,7 +112,10 @@ class ModelSpec(BaseModel):
 # Roles & Symbol table
 # =============================================================================
 
+
 class Role(str, Enum):
+    """Semantic role for a named quantity (scalar/initial/derived)."""
+
     scalar = "scalar"
     initial = "initial"
     derived = "derived"
@@ -103,6 +123,8 @@ class Role(str, Enum):
 
 @dataclass
 class SymbolInfo:
+    """Metadata for a symbol in the unified namespace."""
+
     name: str
     role: Role
     of: str | None = None
@@ -115,8 +137,11 @@ class SymbolInfo:
 # Normalized IR
 # =============================================================================
 
+
 @dataclass
 class NormalizedIR:
+    """Normalized intermediate representation ready for integration."""
+
     model: str
     t_span: tuple[float, float]
     structure: dict[str, Any]
@@ -129,10 +154,11 @@ class NormalizedIR:
 
 
 def build_symbol_table(
-    spec: ModelSpec,
+    _spec: ModelSpec,
     scalar_values: dict[str, float],
     initials_spec: dict[str, dict[str, Any]],
 ) -> dict[str, SymbolInfo]:
+    """Create a unified symbol table (parameters + initials)."""
     symbols: dict[str, SymbolInfo] = {}
 
     for name in scalar_values:
@@ -156,6 +182,7 @@ def lint_expressions(
     *,
     warnings_as_errors: bool = False,
 ) -> list[str]:
+    """Lint rate and initial expressions for conceptual issues; return warnings."""
     warnings: list[str] = []
 
     comp_names = set(spec.structure.compartments)
@@ -171,15 +198,18 @@ def lint_expressions(
         bad_initials = {n for n in names if n in initial_aliases}
         if bad_initials:
             sug = sorted(n[:-1] for n in bad_initials if n.endswith("0"))
-            warnings.append(
-                f"[lint] Rule '{rule.name}': rate uses initial symbol(s) {sorted(bad_initials)}; "
+            msg = (
+                f"[lint] Rule '{rule.name}': rate uses symbols {sorted(bad_initials)}; "
                 f"did you mean state variables {sug}?"
             )
+            warnings.append(msg)
         unknown = {n for n in names if n not in known_names_for_rates}
         if unknown:
-            warnings.append(
-                f"[lint] Rule '{rule.name}': unknown symbol(s) in rate: {sorted(unknown)}."
+            msg = (
+                f"[lint] Rule '{rule.name}': unknown symbol(s) in rate: "
+                f"{sorted(unknown)}."
             )
+            warnings.append(msg)
 
     for comp, init in ((c, i) for c, i in initials_spec.items() if i):
         expr = init.get("expression")
@@ -188,19 +218,23 @@ def lint_expressions(
         names = _names_in_expr(expr)
         illegal = names & comp_names
         if illegal:
-            warnings.append(
-                f"[lint] Initial '{comp}0' expression uses time-varying state(s) {sorted(illegal)}; "
-                "only scalars and other initials (e.g., I0) are allowed."
+            msg = (
+                f"[lint] Initial '{comp}0' expression uses time-varying state(s) "
+                f"{sorted(illegal)}; only scalars and other initials are allowed."
             )
+            warnings.append(msg)
         allowed = set(symbols.keys()) | {f"{c}0" for c in comp_names}
         unknown = {n for n in names if n not in allowed}
         if unknown:
-            warnings.append(
-                f"[lint] Initial '{comp}0' expression has unknown name(s): {sorted(unknown)}."
+            msg = (
+                f"[lint] Initial '{comp}0' expression has unknown name(s): "
+                f"{sorted(unknown)}."
             )
+            warnings.append(msg)
 
     if warnings_as_errors and warnings:
-        raise ValueError("Configuration lints:\n" + "\n".join(warnings))
+        msg = "Configuration lints:\n" + "\n".join(warnings)
+        raise ValueError(msg)
     return warnings
 
 
@@ -209,10 +243,13 @@ def normalize_spec_to_ir(
     *,
     warnings_as_errors: bool = False,
 ) -> NormalizedIR:
+    """Normalize a validated ModelSpec into a solver-ready IR."""
     warnings: list[str] = []
     comps = spec.structure.compartments
 
-    raw_scalars, initials_raw = _collect_scalars_and_initial_specs(spec.parameters, comps)
+    raw_scalars, initials_raw = _collect_scalars_and_initial_specs(
+        spec.parameters, comps
+    )
     scalars = _normalize_scalar_parameters(raw_scalars)
 
     symbols = build_symbol_table(spec, scalars, initials_raw)
@@ -254,16 +291,25 @@ def normalize_spec_to_ir(
 # Public API
 # =============================================================================
 
-def parse_model_yaml(yaml_str: str, *, warnings_as_errors: bool = False) -> NormalizedIR:
+
+def parse_model_yaml(
+    yaml_str: str, *, warnings_as_errors: bool = False
+) -> NormalizedIR:
+    """Parse and normalize a model YAML string to a NormalizedIR."""
     data = yaml.safe_load(yaml_str)
     if not isinstance(data, dict):
-        raise ValueError("Top-level YAML must be a mapping (dict).")
+        msg = "Top-level YAML must be a mapping (dict)."
+        raise TypeError(msg)
     spec = ModelSpec.model_validate(data)
     return normalize_spec_to_ir(spec, warnings_as_errors=warnings_as_errors)
 
 
-def parse_model_dict(cfg: dict[str, Any], *, warnings_as_errors: bool = False) -> NormalizedIR:
+def parse_model_dict(
+    cfg: dict[str, Any], *, warnings_as_errors: bool = False
+) -> NormalizedIR:
+    """Parse and normalize a model configuration dict to a NormalizedIR."""
     if not isinstance(cfg, dict):
-        raise ValueError("Expected a mapping for configuration.")
+        msg = "Expected a mapping for configuration."
+        raise TypeError(msg)
     spec = ModelSpec.model_validate(cfg)
     return normalize_spec_to_ir(spec, warnings_as_errors=warnings_as_errors)

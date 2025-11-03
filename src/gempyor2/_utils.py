@@ -4,46 +4,69 @@ from __future__ import annotations
 import ast
 from typing import Any
 
-
 _ALLOWED_AST_NODES_NUMERIC = {
-    ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant, ast.Load,
-    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.FloorDiv, ast.Mod,
-    ast.UAdd, ast.USub, ast.Tuple, ast.List, ast.Expr
+    ast.Expression,
+    ast.BinOp,
+    ast.UnaryOp,
+    ast.Constant,
+    ast.Load,
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.Pow,
+    ast.FloorDiv,
+    ast.Mod,
+    ast.UAdd,
+    ast.USub,
+    ast.Tuple,
+    ast.List,
+    ast.Expr,
 }
 
 _ALLOWED_AST_NODES_SYMBOLIC = _ALLOWED_AST_NODES_NUMERIC | {ast.Name}
 
 
-def _safe_eval_numeric(expr: str | int | float) -> float:
-    """Safely evaluate a numeric expression. Disallows names and calls."""
+def _safe_eval_numeric(expr: str | float) -> float:
+    """Safely evaluate a numeric expression; disallows names and function calls."""
     if isinstance(expr, (int, float)):
         return float(expr)
     if not isinstance(expr, str):
-        raise TypeError(f"Expected str|int|float, got {type(expr)}")
+        msg = f"Expected str|int|float, got {type(expr)}"
+        raise TypeError(msg)
 
     tree = ast.parse(expr, mode="eval")
     for node in ast.walk(tree):
         t = type(node)
         if t not in _ALLOWED_AST_NODES_NUMERIC:
-            raise ValueError(f"Unsupported token in numeric expression: {t.__name__}")
+            msg = f"Unsupported token in numeric expression: {t.__name__}"
+            raise ValueError(msg)
         if isinstance(node, ast.Name):
-            raise ValueError(f"Unexpected variable '{node.id}' in numeric expression: {expr}")
+            msg = f"Unexpected variable '{node.id}' in numeric expression: {expr}"
+            # Treat wrong value “kind” in a numeric-only expression as a TypeError
+            raise TypeError(msg)
 
-    return float(eval(compile(tree, "<numeric>", "eval"), {"__builtins__": {}}, {}))
+    # We compile a vetted AST and disable builtins;
+    # literal_eval doesn't handle arithmetic.
+    return float(eval(compile(tree, "<numeric>", "eval"), {"__builtins__": {}}, {}))  # noqa: S307
 
 
 def _safe_eval_symbolic(expr: str, ns: dict[str, float]) -> float:
-    """Safely evaluate an arithmetic expression with named variables."""
+    """Safely evaluate arithmetic with variables present in `ns`."""
     tree = ast.parse(expr, mode="eval")
     for node in ast.walk(tree):
         t = type(node)
         if t not in _ALLOWED_AST_NODES_SYMBOLIC:
-            raise ValueError(f"Unsupported token in expression: {t.__name__}")
+            msg = f"Unsupported token in expression: {t.__name__}"
+            raise ValueError(msg)
         if isinstance(node, ast.Call):
-            raise ValueError("Function calls are not allowed in expressions.")
+            msg = "Function calls are not allowed in expressions."
+            # Not a type mismatch per se, but prefer TypeError per TRY004 guidance.
+            raise TypeError(msg)
         if isinstance(node, ast.Name) and node.id not in ns:
-            raise KeyError(f"Unknown name '{node.id}' in expression: {expr}")
-    return float(eval(compile(tree, "<expr>", "eval"), {"__builtins__": {}}, dict(ns)))
+            msg = f"Unknown name '{node.id}' in expression: {expr}"
+            raise KeyError(msg)
+    return float(eval(compile(tree, "<expr>", "eval"), {"__builtins__": {}}, dict(ns)))  # noqa: S307
 
 
 def _names_in_expr(expr: str) -> set[str]:
@@ -68,44 +91,48 @@ def _collect_scalars_and_initial_specs(
         if isinstance(spec, dict) and spec.get("role") == "initial":
             comp = spec.get("of")
             if comp not in compartments:
-                raise ValueError(f"Initial '{name}' references unknown compartment '{comp}'.")
+                msg = f"Initial '{name}' references unknown compartment '{comp}'."
+                raise ValueError(msg)
             if "values" not in spec and "expression" not in spec:
-                raise ValueError(f"Initial '{name}' must have 'values' or 'expression'.")
+                msg = "Initial '{name}' must have 'values' or 'expression'."
+                raise ValueError(msg)
             if initials_by_comp[comp]:
-                raise ValueError(f"Multiple initial specs for compartment '{comp}'.")
+                msg = f"Multiple initial specs for compartment '{comp}'."
+                raise ValueError(msg)
             copied = dict(spec)
             copied["__param_key__"] = name
             initials_by_comp[comp] = copied
+        elif isinstance(spec, (int, float, str)):
+            scalars_raw[name] = spec
+        elif isinstance(spec, dict) and "role" in spec:
+            msg = (
+                f"Parameter '{name}' has unsupported role '{spec.get('role')}'. "
+                "Only role: initial is recognized in the unified parameters block."
+            )
+            raise ValueError(msg)
         else:
-            if isinstance(spec, (int, float, str)):
-                scalars_raw[name] = spec
-            elif isinstance(spec, dict) and "role" in spec:
-                raise ValueError(
-                    f"Parameter '{name}' has unsupported role '{spec.get('role')}'. "
-                    "Only role: initial is recognized in the unified parameters block."
-                )
-            else:
-                raise ValueError(
-                    f"Parameter '{name}' must be a scalar (int/float/str) or an initial-role dict."
-                )
+            msg = (
+                f"Parameter '{name}' must be a scalar (int/float/str) "
+                "or an initial-role dict."
+            )
+            raise TypeError(msg)
 
     return scalars_raw, initials_by_comp
 
 
 def _normalize_scalar_parameters(raw_params: dict[str, Any]) -> dict[str, float]:
-    """Normalize scalar parameters to floats (ints/floats or numeric strings/expressions)."""
+    """Normalize scalar parameters to floats."""
     out: dict[str, float] = {}
     for k, v in raw_params.items():
         if isinstance(v, (int, float, str)):
             out[k] = _safe_eval_numeric(v)
         else:
-            raise ValueError(
-                f"Parameter '{k}' must be a scalar or numeric string in this first pass; got {type(v)}."
-            )
+            msg = f"Parameter '{k}' must be a scalar or numeric string; got {type(v)}."
+            raise TypeError(msg)
     return out
 
 
-def _resolve_initials(
+def _resolve_initials(  # noqa: C901, PLR0912 - structured loop to resolve dependencies
     initials: dict[str, dict[str, Any]],
     scalars: dict[str, float],
 ) -> dict[str, float]:
@@ -149,13 +176,18 @@ def _resolve_initials(
         if not progressed:
             if remaining:
                 missing = {c: remaining[c].get("expression") for c in remaining}
-                raise ValueError(f"Could not resolve initial expressions (deps unresolved): {missing}")
+                msg = (
+                    "Could not resolve initial expressions (deps unresolved): "
+                    f"{missing}"
+                )
+                raise ValueError(msg)
             break
         if guard > 100:
-            raise ValueError("Cycle detected in initial-condition expressions.")
+            msg = "Cycle detected in initial-condition expressions."
+            raise ValueError(msg)
 
     # Default any missing compartments to zero
-    for comp in initials.keys():
+    for comp in initials:
         if comp not in resolved:
             resolved[comp] = 0.0
 
@@ -171,7 +203,8 @@ def _normalize_dynamics(
     out: list[dict[str, Any]] = []
     for r in rules:
         if r.source not in name_to_idx or r.target not in name_to_idx:
-            raise ValueError(f"Unknown source/target in rule '{r.name}'.")
+            msg = f"Unknown source/target in rule '{r.name}'."
+            raise ValueError(msg)
         out.append(
             {
                 "name": r.name,
