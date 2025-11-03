@@ -1,9 +1,10 @@
+# src/gempyor2/parser.py
 """Pydantic models and normalization pipeline for gempyor2 parser."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum  # UP042: use StrEnum instead of (str, Enum)
 from typing import Any
 
 import yaml
@@ -90,7 +91,7 @@ class Structure(BaseModel):
 
 
 class ModelSpec(BaseModel):
-    """Top-level model specification parsed from YAML."""
+    """Top-level model specification from YAML."""
 
     model: str
     t0: float
@@ -113,7 +114,7 @@ class ModelSpec(BaseModel):
 # =============================================================================
 
 
-class Role(str, Enum):
+class Role(StrEnum):
     """Semantic role for a named quantity (scalar/initial/derived)."""
 
     scalar = "scalar"
@@ -158,7 +159,16 @@ def build_symbol_table(
     scalar_values: dict[str, float],
     initials_spec: dict[str, dict[str, Any]],
 ) -> dict[str, SymbolInfo]:
-    """Create a unified symbol table (parameters + initials)."""
+    """Create a unified symbol table (parameters + initials).
+
+    Args:
+        _spec: The validated model specification (reserved for future use).
+        scalar_values: Normalized scalar parameter values.
+        initials_spec: Initial specification per compartment.
+
+    Returns:
+        Mapping from symbol name to its metadata.
+    """
     symbols: dict[str, SymbolInfo] = {}
 
     for name in scalar_values:
@@ -182,7 +192,20 @@ def lint_expressions(
     *,
     warnings_as_errors: bool = False,
 ) -> list[str]:
-    """Lint rate and initial expressions for conceptual issues; return warnings."""
+    """Lint rate and initial expressions for conceptual issues; return warnings.
+
+    Args:
+        spec: The validated model specification.
+        symbols: The unified symbol table from ``build_symbol_table``.
+        initials_spec: Initial specification per compartment.
+        warnings_as_errors: If True, raise on any lint warnings.
+
+    Returns:
+        A list of human-readable warning strings.
+
+    Raises:
+        ValueError: If ``warnings_as_errors`` is True and any lint warnings exist.
+    """
     warnings: list[str] = []
 
     comp_names = set(spec.structure.compartments)
@@ -243,7 +266,15 @@ def normalize_spec_to_ir(
     *,
     warnings_as_errors: bool = False,
 ) -> NormalizedIR:
-    """Normalize a validated ModelSpec into a solver-ready IR."""
+    """Normalize a validated ModelSpec into a solver-ready IR.
+
+    Args:
+        spec: The validated model specification.
+        warnings_as_errors: If True, lint warnings are escalated to an exception.
+
+    Returns:
+        The normalized intermediate representation.
+    """
     warnings: list[str] = []
     comps = spec.structure.compartments
 
@@ -295,7 +326,18 @@ def normalize_spec_to_ir(
 def parse_model_yaml(
     yaml_str: str, *, warnings_as_errors: bool = False
 ) -> NormalizedIR:
-    """Parse and normalize a model YAML string to a NormalizedIR."""
+    """Parse and normalize a model YAML string to a NormalizedIR.
+
+    Args:
+        yaml_str: The YAML string containing the model specification.
+        warnings_as_errors: If True, lint warnings are escalated to ValueError.
+
+    Returns:
+        The normalized intermediate representation parsed from YAML.
+
+    Raises:
+        TypeError: If the top-level YAML does not parse to a mapping.
+    """
     data = yaml.safe_load(yaml_str)
     if not isinstance(data, dict):
         msg = "Top-level YAML must be a mapping (dict)."
@@ -307,7 +349,18 @@ def parse_model_yaml(
 def parse_model_dict(
     cfg: dict[str, Any], *, warnings_as_errors: bool = False
 ) -> NormalizedIR:
-    """Parse and normalize a model configuration dict to a NormalizedIR."""
+    """Parse and normalize a model configuration dict to a NormalizedIR.
+
+    Args:
+        cfg: The configuration mapping loaded from YAML/JSON/etc.
+        warnings_as_errors: If True, lint warnings are escalated to ValueError.
+
+    Returns:
+        The normalized intermediate representation parsed from the dict.
+
+    Raises:
+        TypeError: If ``cfg`` is not a mapping.
+    """
     if not isinstance(cfg, dict):
         msg = "Expected a mapping for configuration."
         raise TypeError(msg)
