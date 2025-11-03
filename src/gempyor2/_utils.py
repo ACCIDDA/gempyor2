@@ -5,14 +5,14 @@ from __future__ import annotations
 
 import ast
 import operator as _op
-from collections.abc import Iterable, Mapping
-from typing import Any, Never
+from collections.abc import Callable, Iterable, Mapping
+from typing import Any, Never, cast
 
 # =============================================================================
 # Allowed AST node sets
 # =============================================================================
 
-_NUMERIC_ALLOWED = {
+_NUMERIC_ALLOWED: set[type[ast.AST]] = {
     ast.Expression,
     ast.BinOp,
     ast.UnaryOp,
@@ -28,10 +28,10 @@ _NUMERIC_ALLOWED = {
     ast.USub,
     ast.Tuple,
     ast.List,
-    ast.Load,
+    ast.Load,  # keep for mypy/visitor compatibility; harmless in eval-only walk
 }
 
-_SYMBOLIC_ALLOWED = _NUMERIC_ALLOWED | {ast.Name, ast.Load}
+_SYMBOLIC_ALLOWED: set[type[ast.AST]] = _NUMERIC_ALLOWED | {ast.Name, ast.Load}
 
 
 class _SafeEvalError(ValueError):
@@ -76,8 +76,11 @@ class _Evaluator(ast.NodeVisitor):
         self.allow_names = allow_names
         self.ns = dict(namespace or {})
 
-    def visit_Expression(self, node: ast.Expression) -> float | tuple | list:
-        return self.visit(node.body)
+    def visit_Expression(
+        self, node: ast.Expression
+    ) -> float | tuple[float, ...] | list[float]:
+        # mypy doesn't know visit(...) narrows; help it with cast
+        return cast("float | tuple[float, ...] | list[float]", self.visit(node.body))
 
     @staticmethod
     def visit_Constant(node: ast.Constant) -> float:
@@ -86,10 +89,10 @@ class _Evaluator(ast.NodeVisitor):
         msg = "Only numeric constants are allowed."
         raise _SafeEvalError(msg)
 
-    def visit_Tuple(self, node: ast.Tuple) -> tuple:
+    def visit_Tuple(self, node: ast.Tuple) -> tuple[float, ...]:
         return tuple(float(self.visit(elt)) for elt in node.elts)
 
-    def visit_List(self, node: ast.List) -> list:
+    def visit_List(self, node: ast.List) -> list[float]:
         return [float(self.visit(elt)) for elt in node.elts]
 
     def visit_Name(self, node: ast.Name) -> float:
@@ -118,7 +121,7 @@ class _Evaluator(ast.NodeVisitor):
         left = float(self.visit(node.left))
         right = float(self.visit(node.right))
 
-        ops: dict[type, Any] = {
+        ops: dict[type[ast.AST], Callable[[float, float], float]] = {
             ast.Add: _op.add,
             ast.Sub: _op.sub,
             ast.Mult: _op.mul,
@@ -141,7 +144,7 @@ class _Evaluator(ast.NodeVisitor):
         raise _SafeEvalError(msg)
 
 
-def _validate_ast(tree: ast.AST, allowed: set[type]) -> None:
+def _validate_ast(tree: ast.AST, allowed: set[type[ast.AST]]) -> None:
     for node in ast.walk(tree):
         if type(node) not in allowed:
             msg = f"Disallowed syntax: {type(node).__name__}"

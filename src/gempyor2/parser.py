@@ -276,7 +276,10 @@ def normalize_spec_to_ir(
         The normalized intermediate representation.
     """
     warnings: list[str] = []
-    comps = spec.structure.compartments
+
+    # Keep compartments and axes in clearly typed, separate variables
+    comps: list[str] = list(spec.structure.compartments)
+    axes_by_dim: dict[str, list[str]] = spec.structure.axes or {}
 
     raw_scalars, initials_raw = _collect_scalars_and_initial_specs(
         spec.parameters, comps
@@ -301,9 +304,9 @@ def normalize_spec_to_ir(
     engine = {"module": spec.engine.module, "options": spec.engine.options}
     t_span: tuple[float, float] = (float(spec.t0), float(spec.tf))
 
-    structure = {"compartments": comps}
-    if spec.structure.axes:
-        structure["axes"] = spec.structure.axes
+    structure: dict[str, Any] = {"compartments": comps}
+    if axes_by_dim:
+        structure["axes"] = axes_by_dim
 
     return NormalizedIR(
         model=spec.model,
@@ -338,7 +341,7 @@ def parse_model_yaml(
     Raises:
         TypeError: If the top-level YAML does not parse to a mapping.
     """
-    data = yaml.safe_load(yaml_str)
+    data: Any = yaml.safe_load(yaml_str)
     if not isinstance(data, dict):
         msg = "Top-level YAML must be a mapping (dict)."
         raise TypeError(msg)
