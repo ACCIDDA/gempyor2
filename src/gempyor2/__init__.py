@@ -1,6 +1,5 @@
 """gempyor2 vectorized compartmental modeling package."""
 
-<<<<<<< HEAD
 from __future__ import annotations
 
 from .parser import (
@@ -22,8 +21,5 @@ __all__ = [
     "parse_model_yaml",
     "parse_model_dict",
 ]
-=======
-__all__ = ["__version__"]
->>>>>>> main
 
 __version__ = "0.1.0"
