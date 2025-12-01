@@ -94,9 +94,13 @@ def test_crank_nicolson_dense_vs_sparse_equivalent() -> None:
     n = 10
     dx = 0.1
     coeff = 0.5
+    dt = 0.01
 
-    left_dense, right_dense = build_crank_nicolson_dense(n, dx, coeff)
-    left_sparse, right_sparse = build_crank_nicolson_sparse(n, dx, coeff)
+    geom = GridGeometry(n=n, dx=dx)
+    cfg = DiffusionConfig(coeff=coeff)
+
+    left_dense, right_dense = build_crank_nicolson_dense(geom, cfg, dt)
+    left_sparse, right_sparse = build_crank_nicolson_sparse(geom, cfg, dt)
 
     assert np.allclose(left_dense, left_sparse.toarray())
     assert np.allclose(right_dense, right_sparse.toarray())
@@ -108,7 +112,11 @@ def test_crank_nicolson_dense_vs_sparse_equivalent() -> None:
 
 
 def test_build_predictor_corrector_consistent_dense() -> None:
-    """Test predictor-corrector matrices for a dense base matrix."""
+    """Test predictor-corrector matrices for a dense base matrix.
+
+    With the new semantics, predictor should be the identity and
+    left/right operators should be I ± 0.5 * base_matrix.
+    """
     n = 8
     dx = 0.1
     coeff = 0.3
@@ -117,13 +125,16 @@ def test_build_predictor_corrector_consistent_dense() -> None:
     predictor, lc, rc = build_predictor_corrector(a)
 
     ident = np.eye(n, dtype=a.dtype)
-    assert np.allclose(predictor, ident + a)
+    assert np.allclose(predictor, ident)
     assert np.allclose(lc, ident - 0.5 * a)
     assert np.allclose(rc, ident + 0.5 * a)
 
 
 def test_build_predictor_corrector_consistent_sparse() -> None:
-    """Test predictor-corrector matrices for a sparse base matrix."""
+    """Test predictor-corrector matrices for a sparse base matrix.
+
+    Predictor should be identity; left/right are I ± 0.5 * base_matrix.
+    """
     n = 8
     dx = 0.1
     coeff = 0.3
@@ -134,9 +145,55 @@ def test_build_predictor_corrector_consistent_sparse() -> None:
     a_dense = a.toarray()
     ident = np.eye(n, dtype=a_dense.dtype)
 
-    assert np.allclose(_as_dense(predictor), ident + a_dense)
+    assert np.allclose(_as_dense(predictor), ident)
     assert np.allclose(_as_dense(left_corrector), ident - 0.5 * a_dense)
     assert np.allclose(_as_dense(right_corrector), ident + 0.5 * a_dense)
+
+
+def test_predictor_corrector_lr_match_crank_nicolson_dense() -> None:
+    """PC left/right operators match CN when built from the same time-scaled Laplacian."""
+    n = 12
+    dx = 0.1
+    coeff = 0.4
+    dt = 0.03
+
+    geom = GridGeometry(n=n, dx=dx)
+    cfg = DiffusionConfig(coeff=coeff)
+
+    # CN operators from the high-level builder
+    cn_left, cn_right = build_crank_nicolson_dense(geom, cfg, dt)
+
+    # PC operators from the same time-scaled operator
+    lap = build_laplacian_tridiag(n, dx, coeff)
+    time_scaled = lap.toarray() * dt
+    predictor, pc_left, pc_right = build_predictor_corrector(time_scaled)
+
+    ident = np.eye(n, dtype=time_scaled.dtype)
+    assert np.allclose(predictor, ident)
+    assert np.allclose(pc_left, cn_left)
+    assert np.allclose(pc_right, cn_right)
+
+
+def test_predictor_corrector_lr_match_crank_nicolson_sparse() -> None:
+    """PC left/right operators match CN (sparse) with the same time-scaled Laplacian."""
+    n = 12
+    dx = 0.1
+    coeff = 0.4
+    dt = 0.03
+
+    geom = GridGeometry(n=n, dx=dx)
+    cfg = DiffusionConfig(coeff=coeff)
+
+    cn_left, cn_right = build_crank_nicolson_sparse(geom, cfg, dt)
+
+    lap = build_laplacian_tridiag(n, dx, coeff)  # sparse
+    time_scaled = lap * dt
+    predictor, pc_left, pc_right = build_predictor_corrector(time_scaled)
+
+    ident = np.eye(n, dtype=cn_left.dtype)
+    assert np.allclose(_as_dense(predictor), ident)
+    assert np.allclose(pc_left.toarray(), cn_left.toarray())
+    assert np.allclose(pc_right.toarray(), cn_right.toarray())
 
 
 # -------------------------------------------------------------------
@@ -149,9 +206,13 @@ def test_implicit_solve_dense_matches_direct() -> None:
     n = 10
     dx = 0.1
     coeff = 0.2
+    dt = 0.05
+
+    geom = GridGeometry(n=n, dx=dx)
+    cfg = DiffusionConfig(coeff=coeff)
 
     # Use dense CN operators
-    left, right = build_crank_nicolson_dense(n, dx, coeff)
+    left, right = build_crank_nicolson_dense(geom, cfg, dt)
 
     x = np.linspace(0.0, 1.0, n)
     rhs = right @ x
@@ -166,9 +227,13 @@ def test_implicit_solve_sparse_matches_dense() -> None:
     n = 20
     dx = 0.05
     coeff = 0.1
+    dt = 0.02
 
-    left_dense, right_dense = build_crank_nicolson_dense(n, dx, coeff)
-    left_sparse, right_sparse = build_crank_nicolson_sparse(n, dx, coeff)
+    geom = GridGeometry(n=n, dx=dx)
+    cfg = DiffusionConfig(coeff=coeff)
+
+    left_dense, right_dense = build_crank_nicolson_dense(geom, cfg, dt)
+    left_sparse, right_sparse = build_crank_nicolson_sparse(geom, cfg, dt)
 
     rng = np.random.default_rng(7)
     x = rng.standard_normal(size=n)
@@ -184,8 +249,12 @@ def test_implicit_solve_2d_rhs_matches_columnwise() -> None:
     n = 8
     dx = 0.1
     coeff = 0.2
+    dt = 0.03
 
-    left, right = build_crank_nicolson_dense(n, dx, coeff)
+    geom = GridGeometry(n=n, dx=dx)
+    cfg = DiffusionConfig(coeff=coeff)
+
+    left, right = build_crank_nicolson_dense(geom, cfg, dt)
 
     rng = np.random.default_rng(6)
     x = rng.standard_normal(size=(n, 3))
@@ -293,7 +362,7 @@ def test_smooth_out_argument_used() -> None:
 
 
 # -------------------------------------------------------------------
-# solver_dispatcher behavior (new signature)
+# solver_dispatcher behavior (new signature with dt)
 # -------------------------------------------------------------------
 
 
@@ -302,8 +371,9 @@ def test_solver_dispatcher_crank_nicolson_for_linear_rules() -> None:
     rules = [_DummyRule(nonlinear=False, stochastic=False)]
     geom = GridGeometry(n=16, dx=0.1)
     cfg = DiffusionConfig(coeff=0.3)
+    dt = 0.01
 
-    method, operators = solver_dispatcher(rules, geom, cfg)
+    method, operators = solver_dispatcher(rules, geom, cfg, dt)
 
     assert method == "crank-nicolson"
     assert len(operators) == 2
@@ -321,8 +391,9 @@ def test_solver_dispatcher_predictor_corrector_for_nonlinear_or_stochastic() -> 
     ]
     geom = GridGeometry(n=16, dx=0.1)
     cfg = DiffusionConfig(coeff=0.3)
+    dt = 0.01
 
-    method, operators = solver_dispatcher(rules, geom, cfg)
+    method, operators = solver_dispatcher(rules, geom, cfg, dt)
 
     assert method == "predictor-corrector"
     assert len(operators) == 3
