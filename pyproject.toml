@@ -12,7 +12,6 @@ requires-python = ">=3.11,<=3.14"
 dependencies = [
     "PyYAML>=6.0",
     "pydantic>=2.7",
-    "flepimop2",
 ]
 
 [project.optional-dependencies]
