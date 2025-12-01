@@ -9,8 +9,12 @@ This module contains tests that verify:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
-from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 from gempyor2.core_solver import CoreSolver
 from gempyor2.matrix_ops import (
@@ -67,17 +71,17 @@ def test_core_solver_cn_matches_direct_implicit_solve_single_group() -> None:
 
     dx = 1.0
     coeff = 0.1
-    L, R = build_crank_nicolson_dense(n, dx, coeff)
+    left, right = build_crank_nicolson_dense(n, dx, coeff)
 
     def rhs_func(t: float, state: NDArray[np.floating]) -> NDArray[np.floating]:  # noqa: ARG001
         # CN is applied to this rhs; keep it equal to current state
         return state
 
-    solver = CoreSolver(core, operators=(L, R))
+    solver = CoreSolver(core, operators=(left, right))
 
     # Do one step by hand
     x0_flat = x0[:, 0]
-    x1_manual_flat = implicit_solve(L, R, x0_flat)
+    x1_manual_flat = implicit_solve(left, right, x0_flat)
     x1_manual = x1_manual_flat.reshape(n, 1)
 
     solver.run(rhs_func)
@@ -107,14 +111,14 @@ def test_core_solver_predictor_corrector_path_shapes() -> None:
     # Simple "A" for predictor-corrector:
     dx = 1.0
     coeff = 0.05
-    A = build_laplacian_tridiag(n, dx, coeff)
-    predictor, L, R = build_predictor_corrector(A)
+    a = build_laplacian_tridiag(n, dx, coeff)
+    predictor, left, right = build_predictor_corrector(a)
 
     def rhs_func(t: float, state: NDArray[np.floating]) -> NDArray[np.floating]:  # noqa: ARG001
         # Just return state to be processed by predictor+CN
         return state
 
-    solver = CoreSolver(core, operators=(predictor, L, R))
+    solver = CoreSolver(core, operators=(predictor, left, right))
     solver.run(rhs_func)
 
     # Just check we advanced correctly and have finite values

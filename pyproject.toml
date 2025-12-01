@@ -12,13 +12,11 @@ requires-python = ">=3.11,<=3.14"
 dependencies = [
     "PyYAML>=6.0",
     "pydantic>=2.7",
+    "numpy>=1.26",
+    "scipy>=1.11",
 ]
 
 [project.optional-dependencies]
-solve = [
-    "scipy>=1.11",
-    "numpy>=1.26",
-]
 data = [
     "pandas>=2.2",
     "pyarrow>=16.0",

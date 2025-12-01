@@ -23,38 +23,28 @@ FINAL_TIMESTEP_ERROR = "Simulation has already reached final timestep"
 
 
 class ModelCore:
-    """
-    Core class for managing the numerical state of a model.
+    """Core class for managing the numerical state of a model.
 
-    Design goals
-    ------------
-    - CPU-friendly layout: per-timestep state is contiguous in memory.
-    - Full state history by default, but can be disabled for very large runs.
-    - Float64 throughout for numerical robustness (can be changed via dtype).
+    Design goals:
+        - CPU-friendly layout: per-timestep state is contiguous in memory.
+        - Full state history by default, but can be disabled for very large runs.
+        - Float64 throughout for numerical robustness (can be changed via dtype).
 
     Attributes:
-    ----------
-    time_grid : np.ndarray
-        Array of simulation times (float64).
-    dt : float
-        Timestep size (assumed uniform for now).
-    n_states : int
-        Number of epidemic states (e.g., S, E, I1, I2, I3, R).
-    n_subgroups : int
-        Number of population subgroups (e.g., age groups).
-    n_timesteps : int
-        Number of time points in the simulation.
-    current_step : int
-        Index of the current timestep (0-based).
-    current_state : np.ndarray
-        State at the current timestep, shape (n_states, n_subgroups).
-    state_array : np.ndarray | None
-        Full state history, shape (n_timesteps, n_states, n_subgroups),
-        or None if store_history=False.
-    store_history : bool
-        Whether the full time history is being stored.
-    dtype : np.dtype
-        Floating-point dtype used for all internal arrays (default float64).
+        time_grid: Array of simulation times (float64).
+        dt: Timestep size (assumed uniform for now).
+        n_states: Number of epidemic states (e.g., S, E, I1, I2, I3, R).
+        n_subgroups: Number of population subgroups (e.g., age groups).
+        n_timesteps: Number of time points in the simulation.
+        current_step: Index of the current timestep (0-based).
+        current_state: State at the current timestep, shape
+            (n_states, n_subgroups).
+        state_array: Full state history, shape
+            (n_timesteps, n_states, n_subgroups), or None if
+            store_history=False.
+        store_history: Whether the full time history is being stored.
+        dtype: Floating-point dtype used for all internal arrays
+            (default np.float64).
     """
 
     def __init__(
@@ -66,22 +56,20 @@ class ModelCore:
         store_history: bool = True,
         dtype: np.dtype = np.float64,
     ) -> None:
-        """
-        Initialize the ModelCore with simulation parameters.
+        """Initialize the ModelCore with simulation parameters.
 
-        Parameters
-        ----------
-        n_states : int
-            Number of epidemic states.
-        n_subgroups : int
-            Number of population subgroups (e.g., age groups).
-        time_grid : array-like
-            Monotonic array of simulation time points.
-        store_history : bool, optional
-            If True, store full state history in state_array.
-            If False, only keep current_state.
-        dtype : np.dtype, optional
-            Floating-point dtype for internal arrays (default float64).
+        Args:
+            n_states: Number of epidemic states.
+            n_subgroups: Number of population subgroups (e.g., age groups).
+            time_grid: Monotonic array of simulation time points.
+            store_history: If True, store full state history in state_array.
+                If False, only keep current_state.
+            dtype: Floating-point dtype for internal arrays (default
+                np.float64).
+
+        Raises:
+            ValueError: If time_grid is not 1D, has no time points,
+                or is not strictly increasing.
         """
         self.time_grid = np.asarray(time_grid, dtype=dtype)
         if self.time_grid.ndim != 1:
@@ -131,13 +119,15 @@ class ModelCore:
     # ------------------------------------------------------------------
 
     def set_initial_state(self, initial_state: np.ndarray) -> None:
-        """
-        Set the state at t = time_grid[0].
+        """Set the state at t = time_grid[0].
 
-        Parameters
-        ----------
-        initial_state : np.ndarray
-            Array of shape (n_states, n_subgroups).
+        Args:
+            initial_state: Array of shape (n_states, n_subgroups) containing
+                the initial compartment values.
+
+        Raises:
+            ValueError: If initial_state does not have shape
+                (n_states, n_subgroups).
         """
         initial_state_arr = np.asarray(initial_state, dtype=self.dtype)
         if initial_state_arr.shape != (self.n_states, self.n_subgroups):
@@ -156,27 +146,29 @@ class ModelCore:
         self.current_step = 0
 
     def get_current_state(self) -> np.ndarray:
-        """Return the current state as a (n_states, n_subgroups) array."""
+        """Return the current state.
+
+        Returns:
+            A view of the current state array of shape
+            (n_states, n_subgroups).
+        """
         return self.current_state
 
     def get_state_at(self, step: int) -> np.ndarray:
-        """
-        Return the state at a given timestep (requires store_history=True).
+        """Return the state at a given timestep.
 
-        Parameters
-        ----------
-        step : int
-            Timestep index in [0, n_timesteps).
+        Requires that store_history=True.
+
+        Args:
+            step: Timestep index in the range [0, n_timesteps).
 
         Returns:
-        -------
-        np.ndarray
-            State at the requested timestep, shape (n_states, n_subgroups).
+            State at the requested timestep, shape
+            (n_states, n_subgroups).
 
         Raises:
-        ------
-        RuntimeError
-            If store_history=False.
+            RuntimeError: If store_history is False (no history stored).
+            IndexError: If step is outside [0, n_timesteps).
         """
         if not self.store_history or self.state_array is None:
             msg = HISTORY_NOT_STORED_ERROR
@@ -199,23 +191,15 @@ class ModelCore:
             raise RuntimeError(msg)
 
     def apply_deltas(self, deltas: np.ndarray) -> None:
-        """
-        Advance one timestep by applying additive deltas to the current state.
+        """Advance one timestep by applying additive deltas.
 
-        Parameters
-        ----------
-        deltas : np.ndarray
-            Array of shape (n_states, n_subgroups) representing state changes
-            to apply over the next dt.
+        Args:
+            deltas: Array of shape (n_states, n_subgroups) representing
+                state changes to apply over the next dt.
 
-        Notes:
-        -----
-        This performs:
-
-            next_state = current_state + deltas
-
-        and then advances current_step, updating both current_state and
-        (optionally) the history array.
+        Raises:
+            ValueError: If deltas does not have shape
+                (n_states, n_subgroups).
         """
         deltas_arr = np.asarray(deltas, dtype=self.dtype)
         if deltas_arr.shape != (self.n_states, self.n_subgroups):
@@ -236,14 +220,15 @@ class ModelCore:
             self.state_array[self.current_step, :, :] = self.current_state
 
     def apply_next_state(self, next_state: np.ndarray) -> None:
-        """
-        Advance one timestep by directly specifying the next state.
+        """Advance one timestep by directly specifying the next state.
 
-        Parameters
-        ----------
-        next_state : np.ndarray
-            Array of shape (n_states, n_subgroups) representing the state
-            at the next timestep.
+        Args:
+            next_state: Array of shape (n_states, n_subgroups) representing
+                the state at the next timestep.
+
+        Raises:
+            ValueError: If next_state does not have shape
+                (n_states, n_subgroups).
         """
         next_state_arr = np.asarray(next_state, dtype=self.dtype)
         if next_state_arr.shape != (self.n_states, self.n_subgroups):
@@ -264,5 +249,10 @@ class ModelCore:
             self.state_array[self.current_step, :, :] = self.current_state
 
     def advance_timestep(self, next_state: np.ndarray) -> None:
-        """Alias for apply_next_state, for solver-friendly naming."""
+        """Alias for apply_next_state, for solver-friendly naming.
+
+        Args:
+            next_state: State at the next timestep, shape
+                (n_states, n_subgroups).
+        """
         self.apply_next_state(next_state)

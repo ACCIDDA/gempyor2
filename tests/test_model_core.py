@@ -1,4 +1,12 @@
 # tests/test_model_core.py
+"""Unit tests for the ModelCore class.
+
+This module tests the core functionality of ModelCore including:
+- Time grid validation and initialization
+- State management with and without history tracking
+- State updates via deltas and direct assignment
+- Bounds checking for timestep advancement
+"""
 
 import numpy as np
 import pytest

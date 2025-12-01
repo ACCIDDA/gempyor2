@@ -1,9 +1,13 @@
 """Tests for matrix operations in gempyor2.matrix_ops module."""
 
+from dataclasses import dataclass
+
 import numpy as np
 import pytest
 
 from gempyor2.matrix_ops import (
+    DiffusionConfig,
+    GridGeometry,
     build_crank_nicolson_dense,
     build_crank_nicolson_sparse,
     build_laplacian_tridiag,
@@ -16,12 +20,28 @@ from gempyor2.matrix_ops import (
     matrix_grouped_count,
     matrix_grouped_sum,
     smooth,
+    solver_dispatcher,
 )
 
 
 def _as_dense(mat: np.ndarray | object) -> np.ndarray:  # type: ignore[misc]
-    """Convert matrix to dense ndarray if needed."""
+    """Convert matrix to dense ndarray if needed.
+
+    Args:
+        mat: Input matrix, either dense ndarray or sparse matrix.
+
+    Returns:
+        Dense ndarray version of the input matrix.
+    """
     return mat.toarray() if hasattr(mat, "toarray") else np.asarray(mat)
+
+
+@dataclass
+class _DummyRule:
+    """Simple dummy rule with ``nonlinear`` and ``stochastic`` flags."""
+
+    nonlinear: bool = False
+    stochastic: bool = False
 
 
 # -------------------------------------------------------------------
@@ -170,9 +190,9 @@ def test_implicit_solve_2d_rhs_matches_columnwise() -> None:
     rng = np.random.default_rng(6)
     x = rng.standard_normal(size=(n, 3))
 
-    y_col = np.column_stack(
-        [np.linalg.solve(left, right @ x[:, k]) for k in range(x.shape[1])]
-    )
+    y_col = np.column_stack([
+        np.linalg.solve(left, right @ x[:, k]) for k in range(x.shape[1])
+    ])
     y = implicit_solve(left, right, x)
 
     assert np.allclose(y, y_col, atol=1e-10, rtol=1e-10)
@@ -270,3 +290,44 @@ def test_smooth_out_argument_used() -> None:
     mean_last = x.mean(axis=-1, keepdims=True)
     expected = 0.5 * x + 0.5 * mean_last
     assert np.allclose(y, expected)
+
+
+# -------------------------------------------------------------------
+# solver_dispatcher behavior (new signature)
+# -------------------------------------------------------------------
+
+
+def test_solver_dispatcher_crank_nicolson_for_linear_rules() -> None:
+    """solver_dispatcher uses Crank-Nicolson for purely linear rules."""
+    rules = [_DummyRule(nonlinear=False, stochastic=False)]
+    geom = GridGeometry(n=16, dx=0.1)
+    cfg = DiffusionConfig(coeff=0.3)
+
+    method, operators = solver_dispatcher(rules, geom, cfg)
+
+    assert method == "crank-nicolson"
+    assert len(operators) == 2
+    left_op, right_op = operators
+    # Basic shape sanity checks
+    assert left_op.shape == (geom.n, geom.n)
+    assert right_op.shape == (geom.n, geom.n)
+
+
+def test_solver_dispatcher_predictor_corrector_for_nonlinear_or_stochastic() -> None:
+    """solver_dispatcher is predictor-corrector when rules are nonlinear/stochastic."""
+    rules = [
+        _DummyRule(nonlinear=True, stochastic=False),
+        _DummyRule(nonlinear=False, stochastic=True),
+    ]
+    geom = GridGeometry(n=16, dx=0.1)
+    cfg = DiffusionConfig(coeff=0.3)
+
+    method, operators = solver_dispatcher(rules, geom, cfg)
+
+    assert method == "predictor-corrector"
+    assert len(operators) == 3
+    predictor, left_op, right_op = operators
+    # Basic shape sanity checks
+    assert predictor.shape == (geom.n, geom.n)
+    assert left_op.shape == (geom.n, geom.n)
+    assert right_op.shape == (geom.n, geom.n)
