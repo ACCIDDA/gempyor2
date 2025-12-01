@@ -34,6 +34,7 @@ dev = [
     "ruff>=0.13.3",
     "sybil[pytest]>=9.2.0",
     "types-PyYAML>=6.0.12.20240917",
+    "scipy-stubs>=0.5.0",
 ]
 
 [tool.pytest.ini_options]

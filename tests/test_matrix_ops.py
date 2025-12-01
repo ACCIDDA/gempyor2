@@ -24,11 +24,11 @@ from gempyor2.matrix_ops import (
 )
 
 
-def _as_dense(mat: np.ndarray | object) -> np.ndarray:  # type: ignore[misc]
+def _as_dense(mat: np.ndarray | object) -> np.ndarray:
     """Convert matrix to dense ndarray if needed.
 
     Args:
-        mat: Input matrix, either dense ndarray or sparse matrix.
+        mat: Input matrix, possibly sparse.
 
     Returns:
         Dense ndarray version of the input matrix.

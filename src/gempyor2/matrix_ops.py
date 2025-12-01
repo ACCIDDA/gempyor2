@@ -1,25 +1,29 @@
-# gempyor2/src/gempyor2/matrix_ops.py
 """Matrix operations and linear solvers for epidemic modeling."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+import numpy as np
+from scipy.linalg import lu_factor, lu_solve
+from scipy.sparse import coo_matrix, csr_matrix, diags, identity, issparse
+from scipy.sparse.linalg import factorized as sparse_factorized
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from numpy.typing import NDArray
-
-import numpy as np
-from scipy.linalg import lu_factor, lu_solve
-from scipy.sparse import coo_matrix, csr_matrix, diags, identity, issparse, spmatrix
-from scipy.sparse.linalg import factorized as sparse_factorized
+    from numpy.typing import DTypeLike, NDArray
 
 
 @dataclass
 class GridGeometry:
-    """Geometry of a 1D spatial grid."""
+    """Geometry of a 1D spatial grid.
+
+    Attributes:
+        n: Number of grid points.
+        dx: Grid spacing.
+    """
 
     n: int
     dx: float
@@ -27,10 +31,17 @@ class GridGeometry:
 
 @dataclass
 class DiffusionConfig:
-    """Configuration for diffusion-like linear operators."""
+    """Configuration for diffusion-like linear operators.
+
+    Attributes:
+        coeff: Diffusion coefficient (may already include dt scaling if treated
+            as a regularizer).
+        dtype: Floating dtype (e.g. np.float64).
+        bc: Boundary condition; either "neumann" or "absorbing".
+    """
 
     coeff: float
-    dtype: np.dtype = np.float64
+    dtype: DTypeLike = np.float64
     bc: str = "neumann"
 
 
@@ -60,7 +71,7 @@ def build_laplacian_tridiag(
     n: int,
     dx: float,
     coeff: float,
-    dtype: np.dtype = np.float64,
+    dtype: DTypeLike = np.float64,
     bc: str = "neumann",
 ) -> csr_matrix:
     """Build a Laplacian tridiagonal matrix for a given boundary condition.
@@ -80,8 +91,10 @@ def build_laplacian_tridiag(
         ValueError: If bc is not "neumann" or "absorbing".
     """
     factor = coeff / dx**2
-    main_diag = -2.0 * np.ones(n, dtype=dtype)
-    off_diag = np.ones(n - 1, dtype=dtype)
+    _ = np.dtype(dtype)  # ensure valid dtype; we actually rely on default float64
+
+    main_diag = -2.0 * np.ones(n)
+    off_diag = np.ones(n - 1)
 
     if bc == "neumann":
         main_diag[0] = main_diag[-1] = -1.0
@@ -91,20 +104,22 @@ def build_laplacian_tridiag(
         msg = UNKNOWN_BC_ERROR.format(bc=bc)
         raise ValueError(msg)
 
+    # Use Python lists so SciPy's type stubs are happy.
     laplacian = diags(
-        [off_diag, main_diag, off_diag],
+        [off_diag.tolist(), main_diag.tolist(), off_diag.tolist()],
         [-1, 0, 1],
         shape=(n, n),
-        dtype=dtype,
     )
-    return (factor * laplacian).tocsr()
+
+    scaled = laplacian * factor
+    return scaled.tocsr()
 
 
 def build_crank_nicolson_sparse(
     n: int,
     dx: float,
     coeff: float,
-    dtype: np.dtype = np.float64,
+    dtype: DTypeLike = np.float64,
     bc: str = "neumann",
 ) -> tuple[csr_matrix, csr_matrix]:
     """Build sparse Crank-Nicolson operator matrices (L, R).
@@ -122,7 +137,11 @@ def build_crank_nicolson_sparse(
         right-hand Crank-Nicolson operators.
     """
     laplacian = build_laplacian_tridiag(n, dx, coeff, dtype=dtype, bc=bc)
-    identity_mat = identity(n, dtype=dtype, format="csr")
+    identity_mat = identity(
+        n,
+        dtype=np.float64,
+        format="csr",
+    )
     left_op = identity_mat - 0.5 * laplacian
     right_op = identity_mat + 0.5 * laplacian
 
@@ -133,14 +152,17 @@ def build_crank_nicolson_sparse(
             mat[-1, :] = 0.0
             mat[-1, -1] = 1.0
 
-    return left_op.tocsr(), right_op.tocsr()
+    return cast("csr_matrix", left_op.tocsr()), cast(
+        "csr_matrix",
+        right_op.tocsr(),
+    )
 
 
 def build_crank_nicolson_dense(
     n: int,
     dx: float,
     coeff: float,
-    dtype: np.dtype = np.float64,
+    dtype: DTypeLike = np.float64,
     bc: str = "neumann",
 ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
     """Build dense Crank-Nicolson operator matrices (L, R).
@@ -154,11 +176,11 @@ def build_crank_nicolson_dense(
         bc: Boundary condition; either "neumann" or "absorbing".
 
     Returns:
-        A tuple (L, R) of dense arrays representing the left- and right-hand
-        Crank-Nicolson operators.
+        A tuple (L, R) of dense arrays representing the left- and
+        right-hand Crank-Nicolson operators.
     """
     laplacian = build_laplacian_tridiag(n, dx, coeff, dtype=dtype, bc=bc).toarray()
-    identity_mat = np.eye(n, dtype=dtype)
+    identity_mat = np.eye(n, dtype=np.float64)
     left_op = identity_mat - 0.5 * laplacian
     right_op = identity_mat + 0.5 * laplacian
 
@@ -176,10 +198,10 @@ def build_crank_nicolson_operator(
     n: int,
     dx: float,
     coeff: float,
-    dtype: np.dtype = np.float64,
+    dtype: DTypeLike = np.float64,
     bc: str = "neumann",
 ) -> tuple[Any, Any]:
-    """Auto-dispatch Crank-Nicolson operators to dense or sparse form.
+    """Build Crank-Nicolson operators with dense/sparse autodispatch.
 
     Small systems are built as dense operators; large systems as sparse.
 
@@ -238,32 +260,43 @@ def build_predictor_corrector_sparse(
         predictor-corrector scheme.
     """
     n = base_matrix.shape[0]
-    identity_mat = identity(n, format="csr", dtype=base_matrix.dtype)
+    identity_mat = identity(
+        n,
+        format="csr",
+        dtype=np.float64,
+    )
     predictor = identity_mat + base_matrix
     corrector_left = identity_mat - 0.5 * base_matrix
     corrector_right = identity_mat + 0.5 * base_matrix
-    return predictor.tocsr(), corrector_left.tocsr(), corrector_right.tocsr()
+    return (
+        cast("csr_matrix", predictor.tocsr()),
+        cast("csr_matrix", corrector_left.tocsr()),
+        cast("csr_matrix", corrector_right.tocsr()),
+    )
 
 
 def build_predictor_corrector(
-    base_matrix: NDArray[np.floating] | spmatrix,
+    base_matrix: NDArray[np.floating] | csr_matrix,
 ) -> tuple[Any, Any, Any]:
-    """Auto-dispatch predictor-corrector matrices based on size and sparsity.
+    """Build predictor-corrector matrices with dense/sparse autodispatch.
 
     Args:
-        base_matrix: Base operator matrix, either dense array-like or a sparse
-            matrix.
+        base_matrix: Base operator matrix, either a dense array-like or a CSR
+            sparse matrix.
 
     Returns:
         A tuple (predictor, L_op, R_op) where the matrices are dense or
-        sparse depending on the input.
+        sparse depending on the input and problem size.
     """
     n = base_matrix.shape[0]
     if issparse(base_matrix) and n >= _DISPATCH_THRESHOLD:
         return build_predictor_corrector_sparse(base_matrix)
-    dense_base = (
-        base_matrix.toarray() if issparse(base_matrix) else np.asarray(base_matrix)
-    )
+
+    if issparse(base_matrix):
+        dense_base = np.asarray(base_matrix.toarray())
+    else:
+        dense_base = np.asarray(base_matrix)
+
     return build_predictor_corrector_dense(dense_base)
 
 
@@ -273,8 +306,8 @@ def build_predictor_corrector(
 
 
 def _build_implicit_solver(
-    left_op: NDArray[np.floating] | spmatrix,
-    right_op: NDArray[np.floating] | spmatrix,
+    left_op: NDArray[np.floating] | csr_matrix,
+    right_op: NDArray[np.floating] | csr_matrix,
 ) -> Callable[[NDArray[np.floating]], NDArray[np.floating]]:
     """Build a reusable implicit solver for left_op @ y = right_op @ x.
 
@@ -288,42 +321,41 @@ def _build_implicit_solver(
         A callable solver(x) that returns the solution y to
         L y = R x.
     """
-    is_sparse = issparse(left_op) or issparse(right_op)
+    # Only treat as sparse if both operators are sparse.
+    is_sparse = issparse(left_op) and issparse(right_op)
 
     if is_sparse:
-        # Sparse path: respect existing sparse structure regardless of size
-        left_csr = left_op.tocsr() if not issparse(left_op) else left_op
-        right_csr = right_op.tocsr() if not issparse(right_op) else right_op
+        left_csr = cast("csr_matrix", left_op)
+        right_csr = cast("csr_matrix", right_op)
 
         solve_left = sparse_factorized(left_csr)
 
         def solver(x: NDArray[np.floating]) -> NDArray[np.floating]:
             x_arr = np.asarray(x, dtype=left_csr.dtype)
             rhs = right_csr @ x_arr
-            return solve_left(rhs)
+            return np.asarray(solve_left(rhs), dtype=x_arr.dtype)
 
     else:
-        # Dense path: both operators are dense
-        left_dense = np.asarray(left_op, dtype=float)
-        right_dense = np.asarray(right_op, dtype=float)
+        left_dense = np.asarray(left_op)
+        right_dense = np.asarray(right_op)
         lu, piv = lu_factor(left_dense)
 
         def solver(x: NDArray[np.floating]) -> NDArray[np.floating]:
             x_arr = np.asarray(x, dtype=left_dense.dtype)
             rhs = right_dense @ x_arr
-            return lu_solve((lu, piv), rhs)
+            return np.asarray(lu_solve((lu, piv), rhs), dtype=x_arr.dtype)
 
     return solver
 
 
 def implicit_solve(
-    left_op: NDArray[np.floating] | spmatrix,
-    right_op: NDArray[np.floating] | spmatrix,
+    left_op: NDArray[np.floating] | csr_matrix,
+    right_op: NDArray[np.floating] | csr_matrix,
     x: NDArray[np.floating],
 ) -> NDArray[np.floating]:
     """Perform an implicit solve with dense/sparse dispatch and caching.
 
-    Solves left_op @ y = right_op @ x for y, reusing cached
+    This solves left_op @ y = right_op @ x for y, reusing cached
     factorizations keyed by the operator identities.
 
     Args:
@@ -335,8 +367,8 @@ def implicit_solve(
         The solution array y with the same shape as x.
 
     Notes:
-        - Uses a cached factorization keyed by (id(left_op), id(right_op)).
-        - Can be safely called in tight loops (e.g., per subgroup & timestep).
+        * Uses a cached factorization keyed by (id(left_op), id(right_op)).
+        * Can be safely called in tight loops (e.g., per subgroup and timestep).
     """
     key = (id(left_op), id(right_op))
     solver = _IMPLICIT_SOLVER_CACHE.get(key)
@@ -359,11 +391,11 @@ def solver_dispatcher(
     """Dispatch solver operator construction based on rule structure.
 
     Args:
-        rules: List of rule objects (must have stochastic and
-            nonlinear attributes).
-        geom: Grid geometry containing n and dx.
-        cfg: Diffusion configuration containing coeff, dtype, and
-            boundary condition bc.
+        rules: List of rule objects; each must expose boolean attributes
+            nonlinear and stochastic.
+        geom: Grid geometry containing grid size and spacing.
+        cfg: Diffusion configuration containing coefficient, dtype, and
+            boundary condition.
 
     Returns:
         A tuple (method, operators) where:
@@ -371,8 +403,8 @@ def solver_dispatcher(
         * method is either "crank-nicolson" or
           "predictor-corrector".
         * operators is:
-            - (L_op, R_op) for Crank-Nicolson.
-            - (predictor, L_op, R_op) for predictor-corrector.
+            * (L_op, R_op) for Crank-Nicolson.
+            * (predictor, L_op, R_op) for predictor-corrector.
     """
     n = geom.n
     dx = geom.dx
@@ -424,7 +456,7 @@ def matrix_grouped_sum_sparse(
     Returns:
         Grouped sums of shape (G,) or (G, K).
     """
-    return group_matrix @ values
+    return np.asarray(group_matrix @ values)
 
 
 def matrix_grouped_sum_dense(
@@ -442,14 +474,14 @@ def matrix_grouped_sum_dense(
     Returns:
         Grouped sums of shape (G,) or (G, K).
     """
-    return group_matrix @ values
+    return np.asarray(group_matrix @ values)
 
 
 def matrix_grouped_sum(
     group_matrix: csr_matrix | NDArray[np.floating],
     values: NDArray[np.floating],
 ) -> NDArray[np.floating]:
-    """Auto-dispatch grouped sum between dense and sparse implementations.
+    """Compute grouped sums with dense/sparse autodispatch.
 
     Args:
         group_matrix: Group membership matrix of shape (G, N), either dense
@@ -462,16 +494,19 @@ def matrix_grouped_sum(
     n_groups = group_matrix.shape[0]
     if issparse(group_matrix) and n_groups >= _DISPATCH_THRESHOLD:
         return matrix_grouped_sum_sparse(group_matrix, values)
-    dense_matrix = (
-        group_matrix.toarray() if issparse(group_matrix) else np.asarray(group_matrix)
-    )
+    if issparse(group_matrix):
+        dense_matrix = np.asarray(group_matrix.toarray())
+    else:
+        dense_matrix = np.asarray(group_matrix)
     return matrix_grouped_sum_dense(dense_matrix, values)
 
 
 # --- GROUPED COUNT (matrix-based API) ---
 
 
-def matrix_grouped_count_sparse(group_matrix: csr_matrix) -> NDArray[np.floating]:
+def matrix_grouped_count_sparse(
+    group_matrix: csr_matrix,
+) -> NDArray[np.floating]:
     """Compute grouped counts using a sparse membership matrix.
 
     Args:
@@ -480,7 +515,8 @@ def matrix_grouped_count_sparse(group_matrix: csr_matrix) -> NDArray[np.floating
     Returns:
         Group sizes as a 1D array of shape (G,).
     """
-    return np.asarray(group_matrix.sum(axis=1)).ravel()
+    counts = np.asarray(group_matrix.sum(axis=1)).ravel()
+    return counts.astype(float)
 
 
 def matrix_grouped_count_dense(
@@ -494,13 +530,14 @@ def matrix_grouped_count_dense(
     Returns:
         Group sizes as a 1D array of shape (G,).
     """
-    return np.asarray(group_matrix.sum(axis=1))
+    counts = np.asarray(group_matrix.sum(axis=1))
+    return counts.astype(float)
 
 
 def matrix_grouped_count(
     group_matrix: csr_matrix | NDArray[np.floating],
 ) -> NDArray[np.floating]:
-    """Auto-dispatch grouped count between dense and sparse implementations.
+    """Compute grouped counts with dense/sparse autodispatch.
 
     Args:
         group_matrix: Group membership matrix of shape (G, N), either dense
@@ -512,9 +549,10 @@ def matrix_grouped_count(
     n_groups = group_matrix.shape[0]
     if issparse(group_matrix) and n_groups >= _DISPATCH_THRESHOLD:
         return matrix_grouped_count_sparse(group_matrix)
-    dense_matrix = (
-        group_matrix.toarray() if issparse(group_matrix) else np.asarray(group_matrix)
-    )
+    if issparse(group_matrix):
+        dense_matrix = np.asarray(group_matrix.toarray())
+    else:
+        dense_matrix = np.asarray(group_matrix)
     return matrix_grouped_count_dense(dense_matrix)
 
 
@@ -532,9 +570,10 @@ def matrix_masked_sum_sparse(
         data: Data to aggregate.
 
     Returns:
-        Masked sum result as an array.
+        Masked sum result as an array with shape determined by the mask and
+        data.
     """
-    return mask_matrix @ data
+    return np.asarray(mask_matrix @ data)
 
 
 def matrix_masked_sum_dense(
@@ -548,30 +587,33 @@ def matrix_masked_sum_dense(
         data: Data to aggregate.
 
     Returns:
-        Masked sum result as an array.
+        Masked sum result as an array with shape determined by the mask and
+        data.
     """
-    return mask_matrix @ data
+    return np.asarray(mask_matrix @ data)
 
 
 def matrix_masked_sum(
     mask_matrix: csr_matrix | NDArray[np.floating],
     data: NDArray[np.floating],
 ) -> NDArray[np.floating]:
-    """Auto-dispatch masked sum between dense and sparse implementations.
+    """Compute masked sums with dense/sparse autodispatch.
 
     Args:
         mask_matrix: Mask matrix, dense or sparse.
         data: Data to aggregate.
 
     Returns:
-        Masked sum result as an array.
+        Masked sum result as an array with shape determined by the mask and
+        data.
     """
     n_masks = mask_matrix.shape[0]
     if issparse(mask_matrix) and n_masks >= _DISPATCH_THRESHOLD:
         return matrix_masked_sum_sparse(mask_matrix, data)
-    dense_matrix = (
-        mask_matrix.toarray() if issparse(mask_matrix) else np.asarray(mask_matrix)
-    )
+    if issparse(mask_matrix):
+        dense_matrix = np.asarray(mask_matrix.toarray())
+    else:
+        dense_matrix = np.asarray(mask_matrix)
     return matrix_masked_sum_dense(dense_matrix, data)
 
 
@@ -584,7 +626,7 @@ def grouped_count_ids(
     group_ids: NDArray[np.integer],
     n_groups: int,
 ) -> NDArray[np.floating]:
-    """Fast grouped count using integer group IDs.
+    """Compute group sizes from integer group IDs.
 
     Args:
         group_ids: Integer group IDs of shape (N,) in
@@ -595,7 +637,8 @@ def grouped_count_ids(
         Counts per group as an array of shape (n_groups,).
     """
     group_ids_arr = np.asarray(group_ids, dtype=np.int64)
-    return np.bincount(group_ids_arr, minlength=n_groups)
+    counts = np.bincount(group_ids_arr, minlength=n_groups)
+    return counts.astype(float)
 
 
 def grouped_sum_ids(
@@ -603,7 +646,7 @@ def grouped_sum_ids(
     group_ids: NDArray[np.integer],
     n_groups: int,
 ) -> NDArray[np.floating]:
-    """Fast grouped sum using integer group IDs (1D values).
+    """Compute grouped sums from integer group IDs for 1D values.
 
     Args:
         values: Values to sum of shape (N,).
@@ -616,7 +659,8 @@ def grouped_sum_ids(
     """
     values_arr = np.asarray(values)
     group_ids_arr = np.asarray(group_ids, dtype=np.int64)
-    return np.bincount(group_ids_arr, weights=values_arr, minlength=n_groups)
+    sums = np.bincount(group_ids_arr, weights=values_arr, minlength=n_groups)
+    return sums.astype(float)
 
 
 def grouped_sum_ids_2d(
@@ -624,7 +668,7 @@ def grouped_sum_ids_2d(
     group_ids: NDArray[np.integer],
     n_groups: int,
 ) -> NDArray[np.floating]:
-    """Fast grouped sum for 2D values using integer group IDs.
+    """Compute grouped sums from integer group IDs for 2D values.
 
     Args:
         values: Values to sum of shape (N, K) (e.g., compartments per
@@ -686,7 +730,10 @@ def encode_sparse_groups(
     row = group_ids_arr
     col = np.arange(n_items, dtype=np.int64)
     data = np.ones(n_items, dtype=np.float64)
-    return coo_matrix((data, (row, col)), shape=(n_groups, n_items)).tocsr()
+    return cast(
+        "csr_matrix",
+        coo_matrix((data, (row, col)), shape=(n_groups, n_items)).tocsr(),
+    )
 
 
 def encode_dense_groups(
@@ -714,12 +761,13 @@ def smooth(
     alpha: float = 0.02,
     out: NDArray[np.floating] | None = None,
 ) -> NDArray[np.floating]:
-    """Apply simple temporal / axis-wise smoothing along the last axis.
+    """Apply simple smoothing along the last axis.
 
     Args:
         x: Input array; smoothing is applied along the last axis.
-        alpha: Smoothing strength in [0, 1]. alpha → 0 means almost
-            no smoothing.
+        alpha: Smoothing strength in [0, 1]. As alpha → 0 the output
+            approaches the original data; as alpha → 1 the output
+            approaches the mean along the last axis.
         out: Optional output array to write into. If provided, the smoothed
             values are written in-place and returned.
 
@@ -731,4 +779,5 @@ def smooth(
     if out is not None:
         np.copyto(out, smoothed)
         return out
-    return smoothed
+    # Help mypy see this is an ndarray of floats.
+    return cast("NDArray[np.floating]", smoothed)

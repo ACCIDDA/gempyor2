@@ -50,8 +50,13 @@ def test_set_initial_state_and_history_on() -> None:
 
     assert core.current_step == 0
     assert np.array_equal(core.get_current_state(), init)
-    assert core.state_array.shape == (3, 2, 3)
-    assert np.array_equal(core.state_array[0], init)
+
+    # Narrow type for mypy: state_array is not None when store_history=True
+    assert core.state_array is not None
+    state_array = core.state_array
+
+    assert state_array.shape == (3, 2, 3)
+    assert np.array_equal(state_array[0], init)
 
 
 def test_set_initial_state_and_history_off() -> None:

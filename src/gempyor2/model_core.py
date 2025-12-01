@@ -3,7 +3,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
+
+if TYPE_CHECKING:
+    from numpy.typing import DTypeLike
 
 # Error / message constants -------------------------------------------------
 
@@ -54,7 +59,7 @@ class ModelCore:
         time_grid: np.ndarray,
         *,
         store_history: bool = True,
-        dtype: np.dtype = np.float64,
+        dtype: DTypeLike = np.float64,
     ) -> None:
         """Initialize the ModelCore with simulation parameters.
 
