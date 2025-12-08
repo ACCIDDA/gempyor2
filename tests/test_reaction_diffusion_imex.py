@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 from numpy.linalg import norm
+from numpy.typing import NDArray
 from scipy.linalg import expm
 
-from gempyor2.core_solver import CoreSolver
+from gempyor2.core_solver import CoreSolver, ReactionRHSFunction, RHSFunction
 from gempyor2.matrix_ops import (
     DiffusionConfig,
     GridGeometry,
@@ -17,18 +20,244 @@ from gempyor2.matrix_ops import (
 )
 from gempyor2.model_core import ModelCore
 
+FloatArray = NDArray[np.floating]
+
+# ---------------------------------------------------------------------
+# Module-level constants (avoid extra locals in tests)
+# ---------------------------------------------------------------------
+
+DIFFUSIVITY = 0.1
+N_POINTS = 32
+
+TOTAL_TIME_CN = 0.5
+N_STEPS_CN = 51
+
+TOTAL_TIME_RD = 0.2
+LAMBDA_REACT = -0.3
+N_STEPS_LIST = (41, 81, 161)
+
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
 
 
-def _initial_condition(x: np.ndarray) -> np.ndarray:
-    """Smooth multi-mode initial condition on [0, 1] with zero Dirichlet BCs."""
-    return (
+def _initial_condition(x: FloatArray) -> FloatArray:
+    """
+    Smooth multi-mode initial condition on [0, 1] with zero Dirichlet BCs.
+
+    Args:
+        x: 1D array of spatial points.
+
+    Returns:
+        Initial condition evaluated at x.
+    """
+    result = (
         np.sin(np.pi * x)
         + 0.3 * np.sin(3.0 * np.pi * x)
         + 0.1 * np.sin(5.0 * np.pi * x)
     )
+    # Help mypy: ensure this is seen as an ndarray[float, ...]
+    return cast("FloatArray", np.asarray(result, dtype=float))
+
+
+def _run_cn_diffusion(
+    y0: FloatArray,
+    time_grid: FloatArray,
+    geom: GridGeometry,
+    cfg: DiffusionConfig,
+) -> FloatArray:
+    """
+    Run pure diffusion using Crank-Nicolson via CoreSolver.run.
+
+    Args:
+        y0: Initial condition array of shape (n_points, 1).
+        time_grid: 1D array of time points.
+        geom: GridGeometry object defining spatial grid.
+        cfg: DiffusionConfig object defining diffusion parameters.
+
+    Returns:
+        Final solution array of shape (n_points,).
+    """
+    dt = float(time_grid[1] - time_grid[0])
+    left_cn, right_cn = build_crank_nicolson_dense(geom, cfg, dt)
+
+    core = ModelCore(
+        n_states=y0.shape[0],
+        n_subgroups=1,
+        time_grid=time_grid,
+        store_history=False,
+    )
+    core.set_initial_state(y0)
+
+    def rhs_cn(
+        _t: float,
+        state: FloatArray,
+    ) -> FloatArray:
+        """
+        For pure diffusion with CN, rhs is just the current state.
+
+        Args:
+            _t: Current time (unused).
+            state: Current state array.
+
+        Returns:
+            The state itself.
+        """
+        return state
+
+    solver = CoreSolver(core, operators=(left_cn, right_cn))
+    solver.run(cast("RHSFunction", rhs_cn))
+
+    return core.current_state[:, 0].copy()
+
+
+def _run_imex_diffusion_zero_reaction(
+    y0: FloatArray,
+    time_grid: FloatArray,
+    geom: GridGeometry,
+    cfg: DiffusionConfig,
+) -> FloatArray:
+    """
+    Run diffusion using IMEX with a reaction term identically zero.
+
+    Args:
+        y0: Initial condition array of shape (n_points, 1).
+        time_grid: 1D array of time points.
+        geom: GridGeometry object defining spatial grid.
+        cfg: DiffusionConfig object defining diffusion parameters.
+
+    Returns:
+        Final solution array of shape (n_points,).
+    """
+    dt = float(time_grid[1] - time_grid[0])
+
+    lap = build_laplacian_tridiag(
+        n=geom.n,
+        dx=geom.dx,
+        coeff=cfg.coeff,
+        dtype=np.float64,
+        bc=cfg.bc,
+    ).toarray()
+    time_scaled_op = dt * lap
+    predictor, left_imex, right_imex = build_predictor_corrector(time_scaled_op)
+
+    core = ModelCore(
+        n_states=y0.shape[0],
+        n_subgroups=1,
+        time_grid=time_grid,
+        store_history=False,
+    )
+    core.set_initial_state(y0)
+
+    def reaction_zero(
+        t: float,  # noqa: ARG001
+        state: FloatArray,
+    ) -> FloatArray:
+        # No reaction: F(t, y) = 0
+        return np.zeros_like(state)
+
+    solver = CoreSolver(core, operators=(predictor, left_imex, right_imex))
+    solver.run_imex(cast("ReactionRHSFunction", reaction_zero))
+
+    return core.current_state[:, 0].copy()
+
+
+def _build_linear_reaction_diffusion_setup() -> tuple[
+    FloatArray, FloatArray, FloatArray
+]:
+    """
+    Build spatial operator, initial condition, and exact solution.
+
+    We consider the semi-discrete system y' = A y + λ y, where A is the
+    discrete diffusion operator with absorbing BCs and λ is a scalar reaction rate.
+    The exact solution at time T is y(T) = exp((A + λ I) * T) @ y0.
+
+    Args:
+        None.
+
+    Returns:
+        Tuple of (diffusion operator A, initial condition y0, exact solution y_exact).
+    """
+    x = np.linspace(0.0, 1.0, N_POINTS)
+    geom = GridGeometry(n=N_POINTS, dx=x[1] - x[0])
+    cfg = DiffusionConfig(coeff=DIFFUSIVITY, bc="absorbing")
+
+    # Build spatial operator A = D * Δ_h (discrete diffusion)
+    lap = build_laplacian_tridiag(
+        n=geom.n,
+        dx=geom.dx,
+        coeff=cfg.coeff,
+        dtype=np.float64,
+        bc=cfg.bc,
+    ).toarray()
+
+    # Full linear operator B = A + λ I for the exact solution
+    identity_mat = np.eye(N_POINTS, dtype=float)
+    operator_full = lap + LAMBDA_REACT * identity_mat
+
+    # Initial condition and exact solution
+    y0 = _initial_condition(cast("FloatArray", x)).astype(float)
+    y_exact = expm(TOTAL_TIME_RD * operator_full) @ y0
+
+    return cast("FloatArray", lap), y0, cast("FloatArray", y_exact)
+
+
+def _imex_temporal_error(
+    lap: FloatArray,
+    y0: FloatArray,
+    y_exact: FloatArray,
+    n_steps: int,
+) -> tuple[float, float]:
+    """
+    Run IMEX for n_steps.
+
+    Args:
+        lap: Discrete diffusion operator A.
+        y0: Initial condition array.
+        y_exact: Exact solution array at final time.
+        n_steps: Number of time steps.
+
+    Returns:
+        Tuple of (dt, error at final time).
+    """
+    time_grid = np.linspace(0.0, TOTAL_TIME_RD, n_steps)
+    dt = float(time_grid[1] - time_grid[0])
+
+    time_scaled_op = dt * lap
+    predictor, left_op, right_op = build_predictor_corrector(time_scaled_op)
+
+    core = ModelCore(
+        n_states=N_POINTS,
+        n_subgroups=1,
+        time_grid=time_grid,
+        store_history=False,
+    )
+    core.set_initial_state(y0.reshape(N_POINTS, 1))
+
+    def reaction_rhs(
+        _t: float,
+        state: FloatArray,
+    ) -> FloatArray:
+        """
+        Linear reaction term F(t, y) = λ y.
+
+        Args:
+            _t: Current time (unused).
+            state: Current state array.
+
+        Returns:
+            Reaction term array.
+        """
+        return LAMBDA_REACT * state
+
+    solver = CoreSolver(core, operators=(predictor, left_op, right_op))
+    solver.run_imex(cast("ReactionRHSFunction", reaction_rhs))
+
+    y_num = core.current_state[:, 0].copy()
+    err = norm(y_num - y_exact, ord=np.inf)
+
+    # Cast to plain floats so the return type is exactly tuple[float, float]
+    return float(dt), float(err)
 
 
 # ---------------------------------------------------------------------
@@ -50,79 +279,22 @@ def test_imex_reduces_to_cn_when_reaction_zero() -> None:
     treatment, the results at the final time should agree up to
     numerical tolerance.
     """
-    diffusivity = 0.1
-    n = 32
-    total_time = 0.5
-    n_steps = 51
-    time_grid = np.linspace(0.0, total_time, n_steps)
+    time_grid = np.linspace(0.0, TOTAL_TIME_CN, N_STEPS_CN)
 
-    x = np.linspace(0.0, 1.0, n)
-    dx = x[1] - x[0]
-    dt = time_grid[1] - time_grid[0]
-
-    geom = GridGeometry(n=n, dx=dx)
-    cfg = DiffusionConfig(coeff=diffusivity, bc="neumann")
+    x = np.linspace(0.0, 1.0, N_POINTS, dtype=float)
+    geom = GridGeometry(n=N_POINTS, dx=x[1] - x[0])
+    cfg = DiffusionConfig(coeff=DIFFUSIVITY, bc="neumann")
 
     # Initial condition
-    y0 = _initial_condition(x).astype(float).reshape(n, 1)
+    y0 = _initial_condition(cast("FloatArray", x)).reshape(N_POINTS, 1)
 
-    # --- Reference: pure CN via build_crank_nicolson_dense + run() ---
+    # Reference: pure CN
+    y_cn = _run_cn_diffusion(y0, time_grid, geom, cfg)
 
-    left_cn, right_cn = build_crank_nicolson_dense(geom, cfg, dt)
+    # IMEX with zero reaction
+    y_imex = _run_imex_diffusion_zero_reaction(y0, time_grid, geom, cfg)
 
-    core_cn = ModelCore(
-        n_states=n,
-        n_subgroups=1,
-        time_grid=time_grid,
-        store_history=False,
-    )
-    core_cn.set_initial_state(y0)
-
-    def rhs_cn(
-        t: float,  # noqa: ARG001
-        state: np.ndarray,
-    ) -> np.ndarray:
-        # For pure diffusion with CN, rhs is just the current state.
-        return state
-
-    solver_cn = CoreSolver(core_cn, operators=(left_cn, right_cn))
-    solver_cn.run(rhs_cn)
-
-    y_cn = core_cn.current_state[:, 0].copy()
-
-    # --- IMEX: reaction term identically zero, run_imex() ---
-
-    lap = build_laplacian_tridiag(
-        n=geom.n,
-        dx=geom.dx,
-        coeff=cfg.coeff,
-        dtype=np.float64,
-        bc=cfg.bc,
-    ).toarray()
-    time_scaled_op = dt * lap
-    predictor, left_imex, right_imex = build_predictor_corrector(time_scaled_op)
-
-    core_imex = ModelCore(
-        n_states=n,
-        n_subgroups=1,
-        time_grid=time_grid,
-        store_history=False,
-    )
-    core_imex.set_initial_state(y0)
-
-    def reaction_zero(
-        t: float,  # noqa: ARG001
-        state: np.ndarray,
-    ) -> np.ndarray:
-        # No reaction: F(t, y) = 0
-        return np.zeros_like(state)
-
-    solver_imex = CoreSolver(core_imex, operators=(predictor, left_imex, right_imex))
-    solver_imex.run_imex(reaction_zero)
-
-    y_imex = core_imex.current_state[:, 0].copy()
-
-    # They should agree closely (up to numerical differences in how operators were built)
+    # They should agree closely (up to numerical diffs in how operators were built)
     assert np.allclose(y_imex, y_cn, atol=1e-10, rtol=1e-10)
 
 
@@ -152,74 +324,18 @@ def test_imex_reaction_diffusion_temporal_convergence() -> None:
     We then verify that the error at final time decreases with dt and
     exhibits at least first-order convergence (we expect ~second order).
     """
-    diffusivity = 0.1
-    lambda_react = -0.3
-    total_time = 0.2
-
-    n = 32
-    x = np.linspace(0.0, 1.0, n)
-    dx = x[1] - x[0]
-
-    geom = GridGeometry(n=n, dx=dx)
-    cfg = DiffusionConfig(coeff=diffusivity, bc="absorbing")
-
-    # Build spatial operator A = D * Δ_h (discrete diffusion)
-    lap = build_laplacian_tridiag(
-        n=geom.n,
-        dx=geom.dx,
-        coeff=cfg.coeff,
-        dtype=np.float64,
-        bc=cfg.bc,
-    ).toarray()
-
-    # Full linear operator B = A + λ I for the exact solution
-    identity_mat = np.eye(n, dtype=float)
-    operator_full = lap + lambda_react * identity_mat
-
-    # Initial condition and exact solution
-    y0 = _initial_condition(x).astype(float)
-    y_exact = expm(total_time * operator_full) @ y0
-
-    # Time step refinements: dt halves approximately between runs
-    n_steps_list = [41, 81, 161]  # dt ≈ total_time / (n_steps - 1)
+    lap, y0, y_exact = _build_linear_reaction_diffusion_setup()
 
     errors: list[float] = []
     dts: list[float] = []
 
-    for n_steps in n_steps_list:
-        time_grid = np.linspace(0.0, total_time, n_steps)
-        dt = time_grid[1] - time_grid[0]
-
-        # IMEX operators: predictor (identity), and CN operators for A
-        time_scaled_op = dt * lap
-        predictor, left_op, right_op = build_predictor_corrector(time_scaled_op)
-
-        core = ModelCore(
-            n_states=n,
-            n_subgroups=1,
-            time_grid=time_grid,
-            store_history=False,
-        )
-        core.set_initial_state(y0.reshape(n, 1))
-
-        def reaction_rhs(
-            t: float,  # noqa: ARG001
-            state: np.ndarray,
-        ) -> np.ndarray:
-            # Linear reaction term: λ y
-            return lambda_react * state
-
-        solver = CoreSolver(core, operators=(predictor, left_op, right_op))
-        solver.run_imex(reaction_rhs)
-
-        y_num = core.current_state[:, 0].copy()
-        err = norm(y_num - y_exact, ord=np.inf)
-
-        errors.append(err)
+    for n_steps in N_STEPS_LIST:
+        dt, err = _imex_temporal_error(lap, y0, y_exact, n_steps)
         dts.append(dt)
+        errors.append(err)
 
-    errors_arr = np.array(errors)
-    dts_arr = np.array(dts)
+    errors_arr = np.asarray(errors, dtype=float)
+    dts_arr = np.asarray(dts, dtype=float)
 
     # Errors should decrease as dt decreases
     assert errors_arr[0] > errors_arr[-1], (
@@ -232,4 +348,4 @@ def test_imex_reaction_diffusion_temporal_convergence() -> None:
     )
 
     # We expect ~2nd order; require at least > 1.0 to be robust
-    assert order > 1.0, f"IMEX temporal order too low: got {order}"
+    assert float(order) > 1.0, f"IMEX temporal order too low: got {order}"

@@ -14,10 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-if TYPE_CHECKING:
-    from numpy.typing import NDArray
-
-from gempyor2.core_solver import CoreSolver
+from gempyor2.core_solver import CoreSolver, ReactionRHSFunction, RHSFunction
 from gempyor2.matrix_ops import (
     DiffusionConfig,
     GridGeometry,
@@ -27,6 +24,38 @@ from gempyor2.matrix_ops import (
     implicit_solve,
 )
 from gempyor2.model_core import ModelCore
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
+    # Alias for readability; matches RHSFunction / ReactionRHSFunction
+    FloatArray = NDArray[np.floating]
+
+
+def _get_initial_state() -> tuple[GridGeometry, DiffusionConfig, ModelCore]:
+    """Helper to create a simple initial state, geometry, diffusion config, and core.
+
+    Returns:
+        Tuple of (GridGeometry, DiffusionConfig, ModelCore).
+    """
+    # Initial state: some smooth pattern
+    n = 5
+    core = ModelCore(
+        n_states=n,
+        n_subgroups=1,
+        time_grid=np.array([0.0, 1.0], dtype=float),
+        store_history=True,
+    )
+    x0 = np.linspace(0.0, 1.0, n, dtype=float).reshape(n, 1)
+    core.set_initial_state(x0)
+
+    dx = 1.0
+    coeff = 0.1
+
+    geom = GridGeometry(n=n, dx=dx)
+    cfg = DiffusionConfig(coeff=coeff)
+
+    return geom, cfg, core
 
 
 def test_core_solver_euler_mode_uses_rhs_as_next_state() -> None:
@@ -49,8 +78,10 @@ def test_core_solver_euler_mode_uses_rhs_as_next_state() -> None:
         # Next state increments by 1 each step (Euler-like mode)
         return state + 1.0
 
+    # rhs_func is structurally compatible with RHSFunction
+    rhs: RHSFunction = rhs_func
     solver = CoreSolver(core, operators=None)
-    solver.run(rhs_func)
+    solver.run(rhs)
 
     # Expect: step 0 -> 0, step 1 -> 1, step 2 -> 2, step 3 -> 3
     expected = np.array([[0.0], [1.0], [2.0], [3.0]], dtype=float).reshape(-1, 1, 1)
@@ -64,41 +95,27 @@ def test_core_solver_cn_matches_direct_implicit_solve_single_group() -> None:
     # Single group, CN operators, one time step
     time_grid = np.array([0.0, 1.0], dtype=float)
     n = 5
-    core = ModelCore(
-        n_states=n,
-        n_subgroups=1,
-        time_grid=time_grid,
-        store_history=True,
-    )
-
-    # Initial state: some smooth pattern
-    x0 = np.linspace(0.0, 1.0, n, dtype=float).reshape(n, 1)
-    core.set_initial_state(x0)
-
-    dx = 1.0
-    coeff = 0.1
-    dt = 1.0  # match the single time step for simplicity
-
-    geom = GridGeometry(n=n, dx=dx)
-    cfg = DiffusionConfig(coeff=coeff)
+    dt = float(time_grid[1] - time_grid[0])
+    geom, cfg, core = _get_initial_state()
 
     left, right = build_crank_nicolson_dense(geom, cfg, dt)
 
     def rhs_func(
-        t: float,  # noqa: ARG001
+        _t: float,
         state: NDArray[np.floating],
     ) -> NDArray[np.floating]:
         # CN is applied to this rhs; keep it equal to current state
         return state
 
+    rhs: RHSFunction = rhs_func
     solver = CoreSolver(core, operators=(left, right))
 
     # Do one step by hand
-    x0_flat = x0[:, 0]
+    x0_flat = core.get_state_at(0)[:, 0]
     x1_manual_flat = implicit_solve(left, right, x0_flat)
     x1_manual = x1_manual_flat.reshape(n, 1)
 
-    solver.run(rhs_func)
+    solver.run(rhs)
 
     # There are 2 timesteps; after run, current_step should be 1
     assert core.current_step == 1
@@ -144,8 +161,9 @@ def test_core_solver_predictor_corrector_path_shapes() -> None:
         # Just return state to be processed by predictor + implicit solve
         return state
 
+    rhs: RHSFunction = rhs_func
     solver = CoreSolver(core, operators=(predictor, left, right))
-    solver.run(rhs_func)
+    solver.run(rhs)
 
     # Just check we advanced correctly and have finite values
     assert core.current_step == 1
@@ -193,8 +211,9 @@ def test_core_solver_run_imex_constant_reaction_identity_operators() -> None:
         # Constant reaction: F(t, y) = 1
         return np.ones_like(state)
 
+    reaction: ReactionRHSFunction = reaction_rhs
     solver = CoreSolver(core, operators=(left, right))
-    solver.run_imex(reaction_rhs)
+    solver.run_imex(reaction)
 
     # After T = 1.0 with y' = 1 and y(0) = 0, exact solution is y(T) = 1.
     final_state = core.current_state

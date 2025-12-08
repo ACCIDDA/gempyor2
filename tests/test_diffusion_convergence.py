@@ -18,7 +18,15 @@ from gempyor2.matrix_ops import (
 
 
 def _initial_condition(x: np.ndarray) -> np.ndarray:
-    """Smooth multi-mode initial condition on [0, 1] with zero Dirichlet BCs."""
+    """
+    Smooth multi-mode initial condition on [0, 1] with zero Dirichlet BCs.
+
+    Args:
+        x: 1D array of spatial points.
+
+    Returns:
+        Initial condition evaluated at x.
+    """
     return np.sin(np.pi * x) + 0.3 * np.sin(3 * np.pi * x) + 0.1 * np.sin(5 * np.pi * x)
 
 
@@ -31,12 +39,22 @@ def _analytic_solution(x: np.ndarray, diffusivity: float, t: float) -> np.ndarra
 
     with homogeneous Dirichlet boundary conditions u(t, 0) = u(t, 1) = 0, and
     initial condition given by _initial_condition.
+
+    Args:
+        x: 1D array of spatial points.
+        diffusivity: Diffusion coefficient D.
+        t: Time point to evaluate solution.
+
+    Returns:
+        Analytic solution evaluated at (x, t).
     """
-    return (
+    result = (
         np.sin(np.pi * x) * np.exp(-diffusivity * (np.pi**2) * t)
         + 0.3 * np.sin(3 * np.pi * x) * np.exp(-diffusivity * (3 * np.pi) ** 2 * t)
         + 0.1 * np.sin(5 * np.pi * x) * np.exp(-diffusivity * (5 * np.pi) ** 2 * t)
     )
+
+    return np.asarray(result)
 
 
 # ---------------------------------------------------------------------
@@ -54,6 +72,15 @@ def _run_cn_temporal(
 
     Uses absorbing boundary conditions, which correspond to a Dirichlet-like
     treatment in the code and match the analytic solution.
+
+    Args:
+        n_x: Number of spatial grid points.
+        n_steps: Number of time steps.
+        diffusivity: Diffusion coefficient.
+        total_time: Total simulation time.
+
+    Returns:
+        Tuple of (final solution array, spatial grid points).
     """
     x = np.linspace(0.0, 1.0, n_x)
     dx = x[1] - x[0]
@@ -77,7 +104,21 @@ def _run_cn_spatial(
     diffusivity: float,
     total_time: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Run CN diffusion for spatial convergence (fix dt extremely small)."""
+    """
+    Run CN diffusion for spatial convergence (fix dt extremely small).
+
+    Uses absorbing boundary conditions, which correspond to a Dirichlet-like
+    treatment in the code and match the analytic solution.
+
+    Args:
+        n_x: Number of spatial grid points.
+        dt: Time step size.
+        diffusivity: diffusion coefficient.
+        total_time: Total simulation time.
+
+    Returns:
+        Tuple of (final solution array, spatial grid points).
+    """
     x = np.linspace(0.0, 1.0, n_x)
     dx = x[1] - x[0]
 
@@ -120,7 +161,7 @@ def test_diffusion_cn_temporal_convergence() -> None:
         analytic = _analytic_solution(x, diffusivity, total_time)
 
         err = norm(sol - analytic, ord=np.inf)
-        errors.append(err)
+        errors.append(float(err))
         dts.append(total_time / (n_steps - 1))
 
     errors_arr = np.array(errors)
@@ -156,10 +197,10 @@ def test_diffusion_cn_spatial_convergence() -> None:
         analytic = _analytic_solution(x, diffusivity, total_time)
 
         dx = x[1] - x[0]
-        dxs.append(dx)
+        dxs.append(float(dx))
 
         err = norm(sol - analytic, ord=np.inf)
-        errors.append(err)
+        errors.append(float(err))
 
     errors_arr = np.array(errors)
     dxs_arr = np.array(dxs)

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import NDArray
@@ -16,61 +17,52 @@ if TYPE_CHECKING:
 OPERATORS_ERROR_MSG = "operators must be a 2-tuple (CN) or 3-tuple (PC)"
 
 
-# Type aliases / protocols -------------------------------------------------
+# Type aliases --------------------------------------------------------------
 
 
-class RHSFunction(Protocol):
-    """Protocol for RHS functions used by CoreSolver.run."""
+RHSFunction = Callable[[float, NDArray[np.floating]], NDArray[np.floating]]
+"""RHS function used by CoreSolver.run.
 
-    def __call__(
-        self,
-        t: float,
-        state: NDArray[np.floating],
-    ) -> NDArray[np.floating]:
-        """Compute the RHS array for the solver step.
+Signature:
+    rhs(t, state) -> rhs_array
 
-        Args:
-            t: Current simulation time.
-            state: Current state array of shape (n_states, n_subgroups).
+Args:
+    t: Current simulation time.
+    state: Current state array of shape (n_states, n_subgroups).
 
-        Returns:
-            RHS array of shape (n_states, n_subgroups) to be fed into
-            the solver step.
-        """
+Returns:
+    RHS array of shape (n_states, n_subgroups) to be fed into the solver step.
+"""
 
+ReactionRHSFunction = Callable[[float, NDArray[np.floating]], NDArray[np.floating]]
+"""Reaction-only RHS function used by CoreSolver.run_imex.
 
-class ReactionRHSFunction(Protocol):
-    """Protocol for reaction-only RHS functions used by run_imex.
+This represents the nonlinear / stochastic "reaction" part F(t, y) of a system
 
-    This represents the nonlinear / stochastic "reaction" part F(t, y) of
-    a system
+    y' = A y + F(t, y),
 
-        y' = A y + F(t, y),
+where the linear part A is handled implicitly via pre-built operators (e.g.,
+Crank-Nicolson) and F is treated explicitly.
 
-    where the linear part A is handled implicitly via pre-built operators
-    (e.g., Crank-Nicolson) and F is treated explicitly.
-    """
+Signature:
+    F(t, state) -> reaction_array
 
-    def __call__(
-        self,
-        t: float,
-        state: NDArray[np.floating],
-    ) -> NDArray[np.floating]:
-        """Compute the reaction-only RHS F(t, state).
+Args:
+    t: Current simulation time.
+    state: Current state array of shape (n_states, n_subgroups).
 
-        Args:
-            t: Current simulation time.
-            state: Current state array of shape (n_states, n_subgroups).
-
-        Returns:
-            Reaction RHS array F(t, state) with shape
-            (n_states, n_subgroups). This must not include the linear
-            diffusion/coupling term A y.
-        """
+Returns:
+    Reaction RHS array F(t, state) with shape (n_states, n_subgroups). This
+    must not include the linear diffusion/coupling term A y.
+"""
 
 
 CoreOperators2 = tuple[NDArray[np.floating], NDArray[np.floating]]
-CoreOperators3 = tuple[NDArray[np.floating], NDArray[np.floating], NDArray[np.floating]]
+CoreOperators3 = tuple[
+    NDArray[np.floating],
+    NDArray[np.floating],
+    NDArray[np.floating],
+]
 CoreOperators = CoreOperators2 | CoreOperators3
 
 

@@ -67,3 +67,5 @@ convention = "google"
 [tool.uv.sources]
 flepimop2 = { git = "https://github.com/ACCIDDA/flepimop2" }
 
+[tool.mypy]
+exclude = ["examples/"]

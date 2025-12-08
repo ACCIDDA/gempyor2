@@ -151,7 +151,7 @@ def test_build_predictor_corrector_consistent_sparse() -> None:
 
 
 def test_predictor_corrector_lr_match_crank_nicolson_dense() -> None:
-    """PC left/right operators match CN when built from the same time-scaled Laplacian."""
+    """PC left/right ops match CN when built from the same time-scaled Laplacian."""
     n = 12
     dx = 0.1
     coeff = 0.4
@@ -192,8 +192,8 @@ def test_predictor_corrector_lr_match_crank_nicolson_sparse() -> None:
 
     ident = np.eye(n, dtype=cn_left.dtype)
     assert np.allclose(_as_dense(predictor), ident)
-    assert np.allclose(pc_left.toarray(), cn_left.toarray())
-    assert np.allclose(pc_right.toarray(), cn_right.toarray())
+    assert np.allclose(pc_left, cn_left.toarray())
+    assert np.allclose(pc_right, cn_right.toarray())
 
 
 # -------------------------------------------------------------------
